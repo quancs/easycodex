@@ -486,6 +486,14 @@ class EasyCodexController(private val context: android.content.Context) {
     private val client = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
+
+    /** 按当前主机的 tlsfp 构建 ws 客户端（自签证书 pinning；无指纹则与 client 相同配置） */
+    private fun wsClient(): OkHttpClient {
+        return TlsPinning.applyTo(
+            OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS),
+            tlsFingerprint,
+        ).build()
+    }
     private val main = Handler(Looper.getMainLooper())
     private val pending = ConcurrentHashMap<String, (JSONObject?, String?) -> Unit>()
     private val connectionStateListeners = CopyOnWriteArraySet<ConnectionStateListener>()
@@ -554,6 +562,8 @@ class EasyCodexController(private val context: android.content.Context) {
     var apiKey by mutableStateOf(prefs.getString(PREF_API_KEY, "") ?: "")
     /** 二维码/深链携带 e2e=1 配对的主机：强制 E2E 加密握手，不回落明文 */
     var e2eRequired by mutableStateOf(prefs.getBoolean(PREF_E2E_REQUIRED, false))
+    /** wss 自签证书 SHA-256 指纹（tlsfp，二维码带外分发） */
+    var tlsFingerprint by mutableStateOf(prefs.getString(PREF_TLS_FINGERPRINT, "") ?: "")
     var defaultModel by mutableStateOf(prefs.getString(PREF_DEFAULT_MODEL, DEFAULT_AGENT_MODEL) ?: DEFAULT_AGENT_MODEL)
     var defaultCwd by mutableStateOf(prefs.getString(PREF_DEFAULT_CWD, DEFAULT_AGENT_CWD) ?: DEFAULT_AGENT_CWD)
     var defaultReasoningEffort by mutableStateOf(
@@ -767,6 +777,8 @@ class EasyCodexController(private val context: android.content.Context) {
         relayUrl = nextRelayUrl
         apiKey = nextApiKey
         e2eRequired = prefs.getBoolean(PREF_E2E_REQUIRED, false)
+        tlsFingerprint = prefs.getString(PREF_TLS_FINGERPRINT, "") ?: ""
+        TlsPinning.activeFingerprint = tlsFingerprint.ifBlank { null }
         refreshRelayHostProfilesFromPrefs()
         defaultModel = prefs.getString(PREF_DEFAULT_MODEL, DEFAULT_AGENT_MODEL)?.ifBlank { DEFAULT_AGENT_MODEL }
             ?: DEFAULT_AGENT_MODEL
@@ -839,7 +851,7 @@ class EasyCodexController(private val context: android.content.Context) {
             statusText = strings.invalidRelayUrl
             return
         }
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        webSocket = wsClient().newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (e2eUnsupported) {
                     sendLegacyAuth(generation)

@@ -473,6 +473,8 @@ function loadDesktopConfig() {
     updateChannel: supportedUpdateChannels.includes(config.updateChannel) ? config.updateChannel : 'stable',
     lightMode: config.lightMode === true,
     guideSeen: config.guideSeen === true,
+    // 公网隧道配置透传（由 tunnel.cjs 的 cleanTunnelConfig 二次清洗）
+    tunnel: config.tunnel && typeof config.tunnel === 'object' ? config.tunnel : {},
   };
 }
 
@@ -884,14 +886,29 @@ function relayDir() {
   return runtimeRelayDir;
 }
 
+const tlsCertPath = path.join(configDir, 'tls-cert.pem');
+
+/** 自签证书 SHA-256 指纹（无冒号小写），随二维码下发给手机做 pinning */
+function tlsFingerprint() {
+  try {
+    if (!fs.existsSync(tlsCertPath)) return '';
+    return new crypto.X509Certificate(fs.readFileSync(tlsCertPath)).fingerprint256.replace(/:/g, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 function connectionDetails(port, apiKey, publicWsUrl) {
   const ip = localIPv4();
   // 隧道在线时优先用公网地址生成连接信息（E2E 加密保证中转安全）
   const relayUrl = publicWsUrl || `ws://${ip}:${port}`;
   const connectBase = relayUrl.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
   // e2e=1 标志随二维码/深链下发：手机扫码后知道必须走 E2E 加密握手配对
-  const connectUrl = `${connectBase}/c?k=${encodeURIComponent(apiKey)}&e2e=1`;
-  const deepLink = `easycodex://connect?relayUrl=${encodeURIComponent(relayUrl)}&apiKey=${encodeURIComponent(apiKey)}&e2e=1`;
+  // wss（自签证书）时附带 tlsfp 指纹，手机端 pinning 免证书告警
+  const fp = relayUrl.startsWith('wss://') ? tlsFingerprint() : '';
+  const fpParam = fp ? `&tlsfp=${fp}` : '';
+  const connectUrl = `${connectBase}/c?k=${encodeURIComponent(apiKey)}&e2e=1${fpParam}`;
+  const deepLink = `easycodex://connect?relayUrl=${encodeURIComponent(relayUrl)}&apiKey=${encodeURIComponent(apiKey)}&e2e=1${fpParam}`;
   return { relayUrl, connectUrl, deepLink };
 }
 
@@ -1271,7 +1288,7 @@ async function appState() {
     supportedUpdateChannels,
     effectiveLanguage: effectiveLanguage(config, mergeRelayEventHealth(lastHealth)),
     supportedLanguages,
-    qrDataUrl: await QRCode.toDataURL(details.connectUrl, {
+    qrDataUrl: await QRCode.toDataURL(details.deepLink, {
       margin: 1,
       width: 360,
       color: { dark: '#1d251f', light: '#ffffff' },
@@ -1583,6 +1600,7 @@ async function startRelay(input, options = {}) {
     CODEX_CWD: workspace,
     CODEX_EXECUTABLE: codex.path,
     EASYCODEX_NO_TERMINAL_QR: '1',
+    EASYCODEX_TLS: '1',
     EASYCODEX_UPDATE_CHANNEL: loadDesktopConfig().updateChannel,
   };
   try {
@@ -1844,7 +1862,7 @@ ipcMain.handle('preview-tunnel', async () => {
   return {
     ...details,
     tunnel: tunnelManager.getState(),
-    qrDataUrl: await QRCode.toDataURL(details.connectUrl, { margin: 1, width: 360 }),
+    qrDataUrl: await QRCode.toDataURL(details.deepLink, { margin: 1, width: 360 }),
   };
 });
 ipcMain.handle('save-config', async (_event, input) => {
@@ -1883,7 +1901,7 @@ ipcMain.handle('preview-port', async (_event, input) => {
     portReclaimable: portStatus.reclaimable,
     portOccupiedByRelay: portStatus.occupiedByRelay,
     processes: portStatus.processes,
-    qrDataUrl: await QRCode.toDataURL(details.connectUrl, {
+    qrDataUrl: await QRCode.toDataURL(details.deepLink, {
       margin: 1,
       width: 360,
       color: { dark: '#1d251f', light: '#ffffff' },

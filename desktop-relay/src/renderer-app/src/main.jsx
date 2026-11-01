@@ -1186,9 +1186,13 @@ function TunnelPanel({ api, appState, isBusy, runAction }) {
     // 仅在表单未被编辑过时同步服务端状态，避免打字被覆盖
     setDraft((current) => current || {
       enabled: Boolean(tunnel.enabled),
+      proxyType: tunnel.proxyType || 'tcp',
       serverAddr: tunnel.serverAddr || '',
       serverPort: tunnel.serverPort || 7000,
       token: tunnel.token || '',
+      user: tunnel.user || '',
+      proxyName: tunnel.proxyName || 'easycodex-relay',
+      subdomain: tunnel.subdomain || '',
       remotePort: tunnel.remotePort || '',
       downloadBase: tunnel.downloadBase || '',
     });
@@ -1222,6 +1226,13 @@ function TunnelPanel({ api, appState, isBusy, runAction }) {
         </select>
       </label>
       <label>
+        <span>隧道类型</span>
+        <select value={draft.proxyType} disabled={isBusy} onChange={(e) => update({ proxyType: e.currentTarget.value })}>
+          <option value="tcp">TCP（境外节点/自建 frps）</option>
+          <option value="http">HTTP(S)（SakuraFrp 国内节点，wss）</option>
+        </select>
+      </label>
+      <label>
         <span>frps 地址</span>
         <input value={draft.serverAddr} disabled={isBusy} placeholder="frp.example.com 或 IP" onInput={(e) => update({ serverAddr: e.currentTarget.value })} />
       </label>
@@ -1234,9 +1245,24 @@ function TunnelPanel({ api, appState, isBusy, runAction }) {
         <input value={draft.token} disabled={isBusy} type="password" placeholder="可选" onInput={(e) => update({ token: e.currentTarget.value })} />
       </label>
       <label>
-        <span>远程端口</span>
-        <input value={draft.remotePort} disabled={isBusy} placeholder="frps 上分配给你的端口" onInput={(e) => update({ remotePort: e.currentTarget.value })} />
+        <span>用户标识</span>
+        <input value={draft.user} disabled={isBusy} placeholder="SakuraFrp 的 user 字段（自建留空）" onInput={(e) => update({ user: e.currentTarget.value })} />
       </label>
+      <label>
+        <span>隧道名</span>
+        <input value={draft.proxyName} disabled={isBusy} placeholder="必须与面板创建的隧道名一致" onInput={(e) => update({ proxyName: e.currentTarget.value })} />
+      </label>
+      {draft.proxyType === 'http' ? (
+        <label>
+          <span>子域名</span>
+          <input value={draft.subdomain} disabled={isBusy} placeholder="如 myname → myname.frp-bar.com" onInput={(e) => update({ subdomain: e.currentTarget.value })} />
+        </label>
+      ) : (
+        <label>
+          <span>远程端口</span>
+          <input value={draft.remotePort} disabled={isBusy} placeholder="frps 上分配给你的端口" onInput={(e) => update({ remotePort: e.currentTarget.value })} />
+        </label>
+      )}
       <label>
         <span>下载镜像</span>
         <input value={draft.downloadBase} disabled={isBusy} placeholder="留空用 GitHub 官方源" onInput={(e) => update({ downloadBase: e.currentTarget.value })} />

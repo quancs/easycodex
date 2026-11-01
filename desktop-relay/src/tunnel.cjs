@@ -37,6 +37,12 @@ function cleanTunnelConfig(input) {
     serverAddr: typeof raw.serverAddr === 'string' ? raw.serverAddr.trim() : '',
     serverPort: Number.isFinite(Number(raw.serverPort)) && Number(raw.serverPort) > 0 ? Number(raw.serverPort) : 7000,
     token: typeof raw.token === 'string' ? raw.token.trim() : '',
+    // SakuraFrp 等多租户 frps 需要 user 字段；proxyName 必须与面板创建的隧道名一致
+    user: typeof raw.user === 'string' ? raw.user.trim() : '',
+    proxyName: typeof raw.proxyName === 'string' && raw.proxyName.trim() ? raw.proxyName.trim() : 'easycodex-relay',
+    // tcp = 四层转发（需境外节点或自建 frps）；http = SakuraFrp 国内节点的 HTTP(S) 隧道（wss）
+    proxyType: raw.proxyType === 'http' ? 'http' : 'tcp',
+    subdomain: typeof raw.subdomain === 'string' ? raw.subdomain.trim() : '',
     remotePort: Number.isFinite(Number(raw.remotePort)) && Number(raw.remotePort) > 0 ? Number(raw.remotePort) : 0,
     downloadBase: typeof raw.downloadBase === 'string' ? raw.downloadBase.trim() : '',
   };
@@ -44,7 +50,11 @@ function cleanTunnelConfig(input) {
 
 function validateTunnelConfig(config) {
   if (!config.serverAddr) throw new Error('请填写 frps 服务器地址（serverAddr）');
-  if (!config.remotePort) throw new Error('请填写 frps 上分配的远程端口（remotePort）');
+  if (config.proxyType === 'http') {
+    if (!config.subdomain) throw new Error('HTTP(S) 隧道需要填写子域名（subdomain）');
+  } else if (!config.remotePort) {
+    throw new Error('请填写 frps 上分配的远程端口（remotePort）');
+  }
   return config;
 }
 
@@ -78,7 +88,12 @@ function createTunnelManager(deps) {
   }
 
   function publicRelayUrl(config) {
-    return `ws://${config.serverAddr}:${config.remotePort}`;
+    if (config.proxyType === 'http') {
+      // HTTP(S) 隧道：frps 终结 TLS，手机经 wss://子域名 连接（443 隐含）
+      return `wss://${config.subdomain}`;
+    }
+    // TCP 隧道转发的是 relay 的 wss 端口（自签 TLS 穿透 frps 的 HTTP 拦截），指纹经二维码 tlsfp 下发
+    return `wss://${config.serverAddr}:${config.remotePort}`;
   }
 
   function downloadBase(config) {
@@ -155,21 +170,35 @@ function createTunnelManager(deps) {
   }
 
   function writeFrpcToml(config, relayPort) {
-    const lines = [
+    const lines = [];
+    // SakuraFrp 等多租户 frps 要求 user 字段放在 serverAddr 之前
+    if (config.user) lines.push(`user = ${JSON.stringify(config.user)}`);
+    lines.push(
       `serverAddr = ${JSON.stringify(config.serverAddr)}`,
       `serverPort = ${config.serverPort}`,
-    ];
-    if (config.token) lines.push(`auth.token = ${JSON.stringify(config.token)}`);
-    lines.push(
-      '',
-      '[[proxies]]',
-      'name = "easycodex-relay"',
-      'type = "tcp"',
-      'localIP = "127.0.0.1"',
-      `localPort = ${relayPort}`,
-      `remotePort = ${config.remotePort}`,
-      '',
     );
+    if (config.token) lines.push(`auth.token = ${JSON.stringify(config.token)}`);
+    // 与 SakuraFrp 面板生成的官方配置保持一致（明文 TCP，E2E 已在应用层加密）
+    lines.push('', 'transport.tls.enable = false', 'transport.tls.disableCustomTLSFirstByte = false');
+    lines.push('', '[[proxies]]', `name = ${JSON.stringify(config.proxyName)}`);
+    if (config.proxyType === 'http') {
+      lines.push(
+        'type = "http"',
+        'localIP = "127.0.0.1"',
+        `localPort = ${relayPort}`,
+        `subdomain = ${JSON.stringify(config.subdomain)}`,
+        '',
+      );
+    } else {
+      // TCP 隧道转发 wss 端口（relay 在 PORT+1 提供自签 TLS）
+      lines.push(
+        'type = "tcp"',
+        'localIP = "127.0.0.1"',
+        `localPort = ${relayPort + 1}`,
+        `remotePort = ${config.remotePort}`,
+        '',
+      );
+    }
     fs.writeFileSync(tomlPath, lines.join('\n'), { encoding: 'utf8', mode: 0o600 });
   }
 

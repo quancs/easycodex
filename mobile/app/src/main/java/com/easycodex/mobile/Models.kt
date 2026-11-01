@@ -142,6 +142,7 @@ data class RelayHostProfile(
     val relayUrl: String,
     val apiKey: String,
     val e2eRequired: Boolean = false,
+    val tlsFingerprint: String = "",
     val hostname: String = "",
     val platform: String = "",
     val workspaceRoot: String = "",

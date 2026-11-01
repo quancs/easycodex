@@ -1,5 +1,6 @@
 import express from 'express';
 import http from 'http';
+import https from 'https';
 import { WebSocketServer, WebSocket } from 'ws';
 import os from 'os';
 import fs from 'fs';
@@ -850,6 +851,33 @@ const server = http.createServer(app);
 const RELAY_WS_MAX_PAYLOAD_BYTES = Number(process.env.EASY_CODEX_WS_MAX_PAYLOAD_BYTES || Math.ceil((MAX_ATTACHMENT_BATCH_BYTES * 4) / 3) + 1024 * 1024);
 const RELAY_WS_MAX_BUFFERED_BYTES = Number(process.env.EASY_CODEX_WS_MAX_BUFFERED_BYTES || 8 * 1024 * 1024);
 const wss = new WebSocketServer({ server, maxPayload: RELAY_WS_MAX_PAYLOAD_BYTES });
+
+// ---------- wss 端口（PORT+1）：自签证书，供公网 TCP 隧道穿透 HTTP 协议拦截 ----------
+// 认证与保密由 E2E 应用层保证，TLS 层只负责让流量不像 HTTP。证书指纹经二维码带外分发（tlsfp 参数），手机端 pinning。
+const TLS_PORT = PORT + 1;
+const TLS_KEY_PATH = path.join(CONFIG_DIR, 'tls-key.pem');
+const TLS_CERT_PATH = path.join(CONFIG_DIR, 'tls-cert.pem');
+
+function ensureTlsCertificate(): { key: Buffer; cert: Buffer } | null {
+  if (process.env.EASYCODEX_TLS !== '1') return null;
+  try {
+    if (!fs.existsSync(TLS_KEY_PATH) || !fs.existsSync(TLS_CERT_PATH)) {
+      console.log('[tls] Generating self-signed certificate...');
+      execFileSync('openssl', [
+        'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+        '-keyout', TLS_KEY_PATH, '-out', TLS_CERT_PATH, '-days', '3650',
+        '-subj', '/CN=easycodex-relay',
+        '-addext', 'subjectAltName=DNS:easycodex-relay',
+      ], { stdio: 'pipe' });
+      fs.chmodSync(TLS_KEY_PATH, 0o600);
+      console.log(`[tls] Certificate written to ${TLS_CERT_PATH}`);
+    }
+    return { key: fs.readFileSync(TLS_KEY_PATH), cert: fs.readFileSync(TLS_CERT_PATH) };
+  } catch (err) {
+    console.warn('[tls] TLS disabled (openssl unavailable):', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 const clients = new Map<WebSocket, ClientSession>();
 const STREAM_HISTORY_LIMIT = Number(process.env.STREAM_HISTORY_LIMIT || 5000);
 const CODEX_WATCH_DEBOUNCE_MS = Number(process.env.CODEX_WATCH_DEBOUNCE_MS || 150);
@@ -1524,7 +1552,7 @@ function handleConnectPage(req: express.Request, res: express.Response) {
 app.get('/connect', handleConnectPage);
 app.get('/c', handleConnectPage);
 
-wss.on('connection', (ws, req) => {
+const handleWsConnection = (ws: WebSocket, req: http.IncomingMessage) => {
   const remoteAddress = req.socket.remoteAddress || 'unknown';
   const session: ClientSession = {
     ws,
@@ -2351,10 +2379,24 @@ wss.on('connection', (ws, req) => {
       updateCodexThreadPoller();
     }
   });
-});
+};
+
+wss.on('connection', handleWsConnection);
 
 async function startRelayServer(): Promise<void> {
   await detectPortWarnings();
+
+  // wss 端口（PORT+1）：与明文端口共用 express app 与 ws 处理逻辑
+  const tls = ensureTlsCertificate();
+  if (tls) {
+    const httpsServer = https.createServer(tls, app);
+    const tlsWss = new WebSocketServer({ server: httpsServer, maxPayload: RELAY_WS_MAX_PAYLOAD_BYTES });
+    tlsWss.on('connection', handleWsConnection);
+    httpsServer.on('error', (err) => console.warn('[tls] wss server error:', err.message));
+    httpsServer.listen(TLS_PORT, '0.0.0.0', () => {
+      console.log(`  TLS (wss): wss://0.0.0.0:${TLS_PORT} (self-signed, fingerprint via desktop QR)`);
+    });
+  }
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => reject(err);
     server.once('error', onError);

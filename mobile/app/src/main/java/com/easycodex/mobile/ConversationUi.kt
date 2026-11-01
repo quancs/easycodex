@@ -2723,6 +2723,7 @@ private fun downloadArtifactSourceToCache(
         val (loadSource, encrypted) = withRelayMediaEncryption(rawSource, relayBase, apiKey, "/media/file")
         if (!loadSource.isHttpImageSource()) return null
         val connection = (URL(loadSource).openConnection() as? HttpURLConnection) ?: return null
+        TlsPinning.applyTo(connection, TlsPinning.activeFingerprint)
         connection.useCaches = false
         connection.instanceFollowRedirects = false
         if (encrypted) {
@@ -2772,6 +2773,7 @@ private fun readBytesWithinLimit(input: java.io.InputStream, maxBytes: Int): Byt
 private fun decodeHttpImage(source: String, apiKey: String, relayHttpBase: String): android.graphics.Bitmap? {
     val (loadSource, encrypted) = withRelayMediaEncryption(source, relayHttpBase, apiKey, "/media/image")
     val connection = URL(loadSource).openConnection()
+    TlsPinning.applyTo(connection, TlsPinning.activeFingerprint)
     connection.useCaches = false
     if (encrypted) {
         (connection as? HttpURLConnection)?.let { http ->

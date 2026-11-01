@@ -137,6 +137,7 @@ const val EASY_CODEX_PREFS = "easycodex"
 const val PREF_RELAY_URL = "relay_url"
 const val PREF_API_KEY = "api_key"
 const val PREF_E2E_REQUIRED = "e2e_required"
+const val PREF_TLS_FINGERPRINT = "tls_fingerprint"
 const val PREF_LAST_STREAM_SESSION_ID = "last_stream_session_id"
 const val PREF_LAST_STREAM_SEQ = "last_stream_seq"
 const val PREF_CLIENT_ID = "client_id"
@@ -532,7 +533,7 @@ fun SettingsApp(onClose: () -> Unit) {
         }
         connectionTesting = true
         connectionStatus = strings.testingConnection
-        val nextClient = SettingsRelayClient(endpoint, nextApiKey.trim(), strings, prefs.getBoolean(PREF_E2E_REQUIRED, false))
+        val nextClient = SettingsRelayClient(endpoint, nextApiKey.trim(), strings, prefs.getBoolean(PREF_E2E_REQUIRED, false), prefs.getString(PREF_TLS_FINGERPRINT, "") ?: "")
         connectionTestClient = nextClient
         var finished = false
         nextClient.connect { connectError ->
@@ -723,7 +724,7 @@ fun SettingsApp(onClose: () -> Unit) {
         notificationSyncing = true
         notificationStatus = strings.syncRelayNotifications
         relayClient?.close()
-        val nextClient = SettingsRelayClient(relayUrl.trim().ifBlank { DEFAULT_RELAY_URL }, apiKey.trim(), strings, prefs.getBoolean(PREF_E2E_REQUIRED, false))
+        val nextClient = SettingsRelayClient(relayUrl.trim().ifBlank { DEFAULT_RELAY_URL }, apiKey.trim(), strings, prefs.getBoolean(PREF_E2E_REQUIRED, false), prefs.getString(PREF_TLS_FINGERPRINT, "") ?: "")
         relayClient = nextClient
         nextClient.connect { connectError ->
             if (connectError != null) {
@@ -2286,10 +2287,12 @@ private class SettingsRelayClient(
     private val apiKey: String,
     private val strings: AppStrings,
     private val e2eRequired: Boolean = false,
+    private val tlsFingerprint: String = "",
 ) {
-    private val client = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS)
-        .build()
+    private val client = TlsPinning.applyTo(
+        OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS),
+        tlsFingerprint,
+    ).build()
     private val main = Handler(Looper.getMainLooper())
     private val pending = ConcurrentHashMap<String, (JSONObject?, String?) -> Unit>()
     private val pendingTimeoutRunnables = ConcurrentHashMap<String, Runnable>()
