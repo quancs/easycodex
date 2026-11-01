@@ -82,9 +82,10 @@ const { mediaSignature, deriveMediaKey, encryptBuffer, decryptBuffer } = await i
 const ts = String(Date.now());
 const mediaUrl = '/media/image?path=%2Ftmp%2Fnone.png&enc=1';
 const sign = mediaSignature(API_KEY, ts, mediaUrl);
-const resp = await fetch(`http://127.0.0.1:3939${mediaUrl}`, { headers: { 'X-E2E-Timestamp': ts, 'X-E2E-Sign': sign } });
+const httpBase = URL_.replace('ws://','http://').replace('wss://','https://');
+const resp = await fetch(`${httpBase}${mediaUrl}`, { headers: { 'X-E2E-Timestamp': ts, 'X-E2E-Sign': sign } });
 ok('媒体签名鉴权通过(403/404=已过鉴权层)', (resp.status === 404 || resp.status === 403), `status=${resp.status}`);
-const respBad = await fetch(`http://127.0.0.1:3939${mediaUrl}`, { headers: { 'X-E2E-Timestamp': ts, 'X-E2E-Sign': mediaSignature('wrong', ts, mediaUrl) } });
+const respBad = await fetch(`${httpBase}${mediaUrl}`, { headers: { 'X-E2E-Timestamp': ts, 'X-E2E-Sign': mediaSignature('wrong', ts, mediaUrl) } });
 ok('媒体错误签名被拒(401)', respBad.status === 401, `status=${respBad.status}`);
 const mediaKey = deriveMediaKey(API_KEY);
 const roundtrip = decryptBuffer(mediaKey, encryptBuffer(mediaKey, Buffer.from('hello media')));
