@@ -117,6 +117,8 @@ import androidx.compose.ui.unit.sp
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.mlkit.vision.barcode.common.Barcode
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import okhttp3.OkHttpClient
@@ -431,6 +433,7 @@ fun SettingsApp(onClose: () -> Unit) {
         }
     }
 
+
     fun markSettingsChanged() {
         (context as? Activity)?.setResult(Activity.RESULT_OK)
     }
@@ -612,6 +615,39 @@ fun SettingsApp(onClose: () -> Unit) {
      * GMS 扫码是否可用。鸿蒙/无 GMS 设备上 ML Kit dynamite 加载会在 GMS 内部
      * 后台线程抛 NPE（绕过 runCatching 直接崩进程），必须在调用前拦截。
      */
+    // ZXing 本地扫码兜底（无 GMS / 鸿蒙设备可用）：扫码结果与相机权限两个启动器
+    val zxingScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val rawValue = result.contents
+        if (rawValue == null) {
+            connectionStatus = strings.scanCanceled
+        } else {
+            val config = parseEasyCodexConnectionUri(Uri.parse(rawValue))
+            if (config == null) {
+                connectionStatus = strings.invalidQrCode
+            } else {
+                importConnectionConfig(config)
+            }
+        }
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            zxingScanLauncher.launch(
+                ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setBeepEnabled(false),
+            )
+        } else {
+            connectionStatus = strings.scanUnavailable
+        }
+    }
+    fun launchZxingScan() {
+        if (context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            zxingScanLauncher.launch(
+                ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setBeepEnabled(false),
+            )
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     fun isGmsScanAvailable(activity: Activity): Boolean {
         val manufacturer = Build.MANUFACTURER.orEmpty()
         val brand = Build.BRAND.orEmpty()
@@ -634,7 +670,8 @@ fun SettingsApp(onClose: () -> Unit) {
             return
         }
         if (!isGmsScanAvailable(activity)) {
-            connectionStatus = strings.scanUnavailable
+            // 无 GMS（鸿蒙等）→ ZXing 本地扫码兜底
+            launchZxingScan()
             return
         }
         val scanTask = runCatching {

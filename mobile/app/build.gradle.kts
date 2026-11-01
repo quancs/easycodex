@@ -57,6 +57,8 @@ dependencies {
     implementation("org.commonmark:commonmark-ext-gfm-tables:0.27.1")
     implementation("org.commonmark:commonmark-ext-task-list-items:0.27.1")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // 无 GMS 设备（鸿蒙）扫码兜底：ZXing 本地扫码，不依赖 Play Services
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
     // E2E v1：X25519/HKDF/AES-GCM 轻量 API（不注册 JCA Provider，鸿蒙安全）
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
