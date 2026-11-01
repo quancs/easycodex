@@ -13,6 +13,7 @@ const {
   selectUpdateAsset,
   verifyDownloadedAsset,
 } = require('./update-helpers.cjs');
+const { createTunnelManager } = require('./tunnel.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -698,6 +699,7 @@ async function applyDesktopUpdate() {
   await broadcastState();
   try {
     if (relayProcess) await stopRelay();
+    tunnelManager.stopTunnelSync();
     if (isDev) {
       appendLog('Applying update from git...');
       await updateFromGit();
@@ -882,13 +884,23 @@ function relayDir() {
   return runtimeRelayDir;
 }
 
-function connectionDetails(port, apiKey) {
+function connectionDetails(port, apiKey, publicWsUrl) {
   const ip = localIPv4();
-  const relayUrl = `ws://${ip}:${port}`;
-  const connectUrl = `http://${ip}:${port}/c?k=${encodeURIComponent(apiKey)}`;
+  // 隧道在线时优先用公网地址生成连接信息（E2E 加密保证中转安全）
+  const relayUrl = publicWsUrl || `ws://${ip}:${port}`;
+  const connectBase = relayUrl.replace(/^ws:\/\//i, 'http://').replace(/^wss:\/\//i, 'https://');
+  const connectUrl = `${connectBase}/c?k=${encodeURIComponent(apiKey)}`;
   const deepLink = `easycodex://connect?relayUrl=${encodeURIComponent(relayUrl)}&apiKey=${encodeURIComponent(apiKey)}`;
   return { relayUrl, connectUrl, deepLink };
 }
+
+const tunnelManager = createTunnelManager({
+  appendLog: (line) => appendLog(line),
+  broadcastState: () => broadcastState(),
+  downloadFile: (url, target) => downloadFile(url, target),
+  loadDesktopConfig: () => loadDesktopConfig(),
+  saveDesktopConfig: (partial) => saveDesktopConfig(partial),
+});
 
 function relayReady() {
   try {
@@ -1222,7 +1234,7 @@ async function confirmDesktopUpdate(info) {
 async function appState() {
   const config = loadDesktopConfig();
   const apiKey = loadApiKey();
-  const details = connectionDetails(config.port, apiKey);
+  const details = connectionDetails(config.port, apiKey, tunnelManager.publicRelayUrl() || undefined);
   const portStatus = await checkPortStatus(config.port).catch(() => ({
     available: false,
     reclaimable: false,
@@ -1254,6 +1266,7 @@ async function appState() {
     language: config.language,
     lightMode: config.lightMode,
     updateChannel: config.updateChannel,
+    tunnel: tunnelManager.getState(),
     supportedUpdateChannels,
     effectiveLanguage: effectiveLanguage(config, mergeRelayEventHealth(lastHealth)),
     supportedLanguages,
@@ -1284,6 +1297,12 @@ function ensureBackgroundServices() {
     setTimeout(() => {
       void checkForUpdates('startup').catch(() => {});
     }, 800);
+  }
+  // 隧道配置为启用时随后台服务自动拉起
+  if (loadDesktopConfig().tunnel?.enabled) {
+    setTimeout(() => {
+      void tunnelManager.startTunnel().catch((err) => appendLog(`Tunnel auto-start failed: ${err.message}`));
+    }, 1500);
   }
 }
 
@@ -1776,6 +1795,7 @@ app.on('before-quit', () => {
   if (healthTimer) clearInterval(healthTimer);
   if (relayProcess) relayProcess.kill();
   if (installProcess) installProcess.kill();
+  tunnelManager.stopTunnelSync();
 });
 
 ipcMain.handle('get-state', appState);
@@ -1804,6 +1824,27 @@ ipcMain.handle('refresh-api-key', async () => {
   writeJson(configPath, { apiKey: generateApiKey() });
   appendLog('Generated a new relay API key.');
   return appState();
+});
+ipcMain.handle('save-tunnel-config', async (_event, input) => {
+  await tunnelManager.saveTunnelConfig(input);
+  return appState();
+});
+ipcMain.handle('start-tunnel', async () => {
+  await tunnelManager.startTunnel();
+  return appState();
+});
+ipcMain.handle('stop-tunnel', async () => {
+  await tunnelManager.stopTunnel();
+  return appState();
+});
+ipcMain.handle('preview-tunnel', async () => {
+  const config = loadDesktopConfig();
+  const details = connectionDetails(config.port, loadApiKey(), tunnelManager.publicRelayUrl() || undefined);
+  return {
+    ...details,
+    tunnel: tunnelManager.getState(),
+    qrDataUrl: await QRCode.toDataURL(details.connectUrl, { margin: 1, width: 360 }),
+  };
 });
 ipcMain.handle('save-config', async (_event, input) => {
   const next = {};

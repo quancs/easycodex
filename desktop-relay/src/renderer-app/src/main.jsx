@@ -1179,6 +1179,86 @@ function AppToolbar({ appState, relayOnline, connectedClients, pendingAction, ac
   );
 }
 
+function TunnelPanel({ api, appState, isBusy, runAction }) {
+  const tunnel = appState?.tunnel || {};
+  const [draft, setDraft] = useState(null);
+  useEffect(() => {
+    // 仅在表单未被编辑过时同步服务端状态，避免打字被覆盖
+    setDraft((current) => current || {
+      enabled: Boolean(tunnel.enabled),
+      serverAddr: tunnel.serverAddr || '',
+      serverPort: tunnel.serverPort || 7000,
+      token: tunnel.token || '',
+      remotePort: tunnel.remotePort || '',
+      downloadBase: tunnel.downloadBase || '',
+    });
+  }, [tunnel.serverAddr, tunnel.remotePort, tunnel.enabled]);
+  if (!draft) return null;
+  const update = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  const save = (patch = {}) => {
+    const next = { ...draft, ...patch, serverPort: Number(draft.serverPort) || 7000, remotePort: Number(draft.remotePort) || 0 };
+    setDraft(next);
+    runAction('saving', () => api.saveTunnelConfig(next));
+  };
+  const statusText = {
+    offline: '未启动',
+    downloading: '正在下载 frpc…',
+    starting: '连接中…',
+    online: '隧道在线',
+    error: '错误',
+  }[tunnel.status] || '未启动';
+  const statusClass = tunnel.status === 'online' ? 'ok-text' : tunnel.status === 'error' ? 'danger-text' : '';
+  return (
+    <div className="setup-grid">
+      <label>
+        <span>启用隧道</span>
+        <select
+          value={draft.enabled ? 'on' : 'off'}
+          disabled={isBusy}
+          onChange={(event) => save({ enabled: event.currentTarget.value === 'on' })}
+        >
+          <option value="off">关闭</option>
+          <option value="on">开启（自动启动 frpc）</option>
+        </select>
+      </label>
+      <label>
+        <span>frps 地址</span>
+        <input value={draft.serverAddr} disabled={isBusy} placeholder="frp.example.com 或 IP" onInput={(e) => update({ serverAddr: e.currentTarget.value })} />
+      </label>
+      <label>
+        <span>frps 端口</span>
+        <input value={draft.serverPort} disabled={isBusy} onInput={(e) => update({ serverPort: e.currentTarget.value })} />
+      </label>
+      <label>
+        <span>frps Token</span>
+        <input value={draft.token} disabled={isBusy} type="password" placeholder="可选" onInput={(e) => update({ token: e.currentTarget.value })} />
+      </label>
+      <label>
+        <span>远程端口</span>
+        <input value={draft.remotePort} disabled={isBusy} placeholder="frps 上分配给你的端口" onInput={(e) => update({ remotePort: e.currentTarget.value })} />
+      </label>
+      <label>
+        <span>下载镜像</span>
+        <input value={draft.downloadBase} disabled={isBusy} placeholder="留空用 GitHub 官方源" onInput={(e) => update({ downloadBase: e.currentTarget.value })} />
+      </label>
+      <div className="wide">
+        <small className={statusClass}>
+          {statusText}{tunnel.status === 'online' && tunnel.publicRelayUrl ? ` · ${tunnel.publicRelayUrl}` : ''}{tunnel.lastError ? ` · ${tunnel.lastError}` : ''}
+        </small>
+        {tunnel.status === 'online' && (
+          <small className="ok-text">公网二维码已切换：手机用「快速连接」里的码即可 4G 远程连接（E2E 加密）</small>
+        )}
+        {tunnel.status !== 'online' && tunnel.frpcInstalled === false && (
+          <small>首次启动会自动下载 frpc v{tunnel.frpVersion || ''}（带 sha256 校验）</small>
+        )}
+      </div>
+      <div className="wide">
+        <button type="button" className="primary-button" disabled={isBusy} onClick={() => save()}>保存隧道配置</button>
+      </div>
+    </div>
+  );
+}
+
 function ConfigScreen({
   appState,
   api,
@@ -1238,6 +1318,13 @@ function ConfigScreen({
             setDraftCodexPath={setDraftCodexPath}
             runAction={runAction}
           />
+        </section>
+        <section className="config-card tunnel-card">
+          <div className="card-heading">
+            <h2>公网隧道</h2>
+            <span>{appState?.tunnel?.status === 'online' ? '在线' : appState?.tunnel?.enabled ? '未连接' : '已关闭'}</span>
+          </div>
+          <TunnelPanel api={api} appState={appState} isBusy={isBusy} runAction={runAction} />
         </section>
         <section className="config-card log-card">
           <div className="card-heading">
