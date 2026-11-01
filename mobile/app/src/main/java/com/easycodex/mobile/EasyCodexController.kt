@@ -552,6 +552,8 @@ class EasyCodexController(private val context: android.content.Context) {
 
     var relayUrl by mutableStateOf(prefs.getString(PREF_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL)
     var apiKey by mutableStateOf(prefs.getString(PREF_API_KEY, "") ?: "")
+    /** 二维码/深链携带 e2e=1 配对的主机：强制 E2E 加密握手，不回落明文 */
+    var e2eRequired by mutableStateOf(prefs.getBoolean(PREF_E2E_REQUIRED, false))
     var defaultModel by mutableStateOf(prefs.getString(PREF_DEFAULT_MODEL, DEFAULT_AGENT_MODEL) ?: DEFAULT_AGENT_MODEL)
     var defaultCwd by mutableStateOf(prefs.getString(PREF_DEFAULT_CWD, DEFAULT_AGENT_CWD) ?: DEFAULT_AGENT_CWD)
     var defaultReasoningEffort by mutableStateOf(
@@ -764,6 +766,7 @@ class EasyCodexController(private val context: android.content.Context) {
         activeRelayHostId = prefs.getString(PREF_ACTIVE_RELAY_HOST_ID, "") ?: ""
         relayUrl = nextRelayUrl
         apiKey = nextApiKey
+        e2eRequired = prefs.getBoolean(PREF_E2E_REQUIRED, false)
         refreshRelayHostProfilesFromPrefs()
         defaultModel = prefs.getString(PREF_DEFAULT_MODEL, DEFAULT_AGENT_MODEL)?.ifBlank { DEFAULT_AGENT_MODEL }
             ?: DEFAULT_AGENT_MODEL
@@ -868,7 +871,7 @@ class EasyCodexController(private val context: android.content.Context) {
                             connectionStatus = "disconnected"
                             statusText = localizedConnectionError("E2E proof mismatch")
                         }
-                    } else if (error != null && error.contains("Invalid API key")) {
+                    } else if (error != null && error.contains("Invalid API key") && !e2eRequired) {
                         // 旧版 relay 不认识 e2e 握手（把无 key 的 auth 判为 key 错误）→ 回退明文 auth
                         e2eUnsupported = true
                         main.post { if (generation == connectionGeneration) connect() }

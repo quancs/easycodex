@@ -10,6 +10,7 @@ import org.json.JSONObject
 data class EasyCodexConnectionConfig(
     val relayUrl: String,
     val apiKey: String,
+    val e2eRequired: Boolean = false,
 )
 
 const val PREF_RELAY_HOST_PROFILES = "relay_host_profiles"
@@ -34,7 +35,9 @@ fun parseEasyCodexConnectionUri(raw: String?): EasyCodexConnectionConfig? {
     }
     if (validateRelayEndpoint(relayUrl, "") != null) return null
 
-    return EasyCodexConnectionConfig(relayUrl = relayUrl, apiKey = apiKey)
+    // 二维码/深链携带 e2e=1 → 该主机强制 E2E 加密握手（不回落明文）
+    val e2eRequired = firstQueryParameter(query, "e2e") in setOf("1", "true")
+    return EasyCodexConnectionConfig(relayUrl = relayUrl, apiKey = apiKey, e2eRequired = e2eRequired)
 }
 
 fun relayHostIdFor(relayUrl: String): String {
@@ -68,6 +71,7 @@ fun parseRelayHostProfiles(raw: String?): List<RelayHostProfile> {
                     name = json.optString("name").ifBlank { relayHostNameFor(relayUrl) },
                     relayUrl = relayUrl,
                     apiKey = apiKey,
+                    e2eRequired = json.optBoolean("e2e", false),
                     hostname = json.optString("hostname"),
                     platform = json.optString("platform"),
                     workspaceRoot = json.optString("workspaceRoot"),
@@ -94,6 +98,7 @@ fun serializeRelayHostProfiles(profiles: List<RelayHostProfile>): String {
                 .put("name", profile.name)
                 .put("relayUrl", profile.relayUrl)
                 .put("apiKey", profile.apiKey)
+                .put("e2e", profile.e2eRequired)
                 .put("hostname", profile.hostname)
                 .put("platform", profile.platform)
                 .put("workspaceRoot", profile.workspaceRoot)
@@ -116,6 +121,7 @@ fun profileFromConnectionConfig(config: EasyCodexConnectionConfig): RelayHostPro
         name = relayHostNameFor(config.relayUrl),
         relayUrl = config.relayUrl,
         apiKey = config.apiKey,
+        e2eRequired = config.e2eRequired,
     )
 }
 
@@ -132,6 +138,7 @@ fun saveRelayHostProfile(
             .putString(PREF_ACTIVE_RELAY_HOST_ID, profile.id)
             .putString(PREF_RELAY_URL, profile.relayUrl)
             .putString(PREF_API_KEY, profile.apiKey)
+            .putBoolean(PREF_E2E_REQUIRED, profile.e2eRequired)
     }
     editor.apply()
 }

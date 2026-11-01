@@ -141,6 +141,7 @@ data class RelayHostProfile(
     val name: String,
     val relayUrl: String,
     val apiKey: String,
+    val e2eRequired: Boolean = false,
     val hostname: String = "",
     val platform: String = "",
     val workspaceRoot: String = "",

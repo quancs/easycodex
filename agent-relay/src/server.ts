@@ -230,8 +230,9 @@ function isValidApiKey(candidate: string | null | undefined): boolean {
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
-function buildConnectDeepLink(relayUrl: string, apiKey: string): string {
-  return `easycodex://connect?relayUrl=${encodeURIComponent(relayUrl)}&apiKey=${encodeURIComponent(apiKey)}`;
+function buildConnectDeepLink(relayUrl: string, apiKey: string, e2e = false): string {
+  const base = `easycodex://connect?relayUrl=${encodeURIComponent(relayUrl)}&apiKey=${encodeURIComponent(apiKey)}`;
+  return e2e ? `${base}&e2e=1` : base;
 }
 
 function buildConnectHttpUrl(networkUrl: string, apiKey: string): string {
@@ -1492,7 +1493,9 @@ function handleConnectPage(req: express.Request, res: express.Response) {
     return;
   }
 
-  const deepLink = buildConnectDeepLink(relayUrl, apiKey);
+  // 二维码/链接携带 e2e=1 时，深链透传给手机端（要求加密握手配对）
+  const e2e = req.query.e2e === '1' || req.query.e2e === 'true';
+  const deepLink = buildConnectDeepLink(relayUrl, apiKey, e2e);
   const escapedDeepLink = escapeHtml(deepLink);
   res.setHeader('Cache-Control', 'no-store');
   res.type('html').send(`<!doctype html>

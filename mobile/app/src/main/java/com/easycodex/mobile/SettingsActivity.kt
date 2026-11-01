@@ -134,6 +134,7 @@ import java.util.concurrent.TimeUnit
 const val EASY_CODEX_PREFS = "easycodex"
 const val PREF_RELAY_URL = "relay_url"
 const val PREF_API_KEY = "api_key"
+const val PREF_E2E_REQUIRED = "e2e_required"
 const val PREF_LAST_STREAM_SESSION_ID = "last_stream_session_id"
 const val PREF_LAST_STREAM_SEQ = "last_stream_seq"
 const val PREF_CLIENT_ID = "client_id"
@@ -528,7 +529,7 @@ fun SettingsApp(onClose: () -> Unit) {
         }
         connectionTesting = true
         connectionStatus = strings.testingConnection
-        val nextClient = SettingsRelayClient(endpoint, nextApiKey.trim(), strings)
+        val nextClient = SettingsRelayClient(endpoint, nextApiKey.trim(), strings, prefs.getBoolean(PREF_E2E_REQUIRED, false))
         connectionTestClient = nextClient
         var finished = false
         nextClient.connect { connectError ->
@@ -685,7 +686,7 @@ fun SettingsApp(onClose: () -> Unit) {
         notificationSyncing = true
         notificationStatus = strings.syncRelayNotifications
         relayClient?.close()
-        val nextClient = SettingsRelayClient(relayUrl.trim().ifBlank { DEFAULT_RELAY_URL }, apiKey.trim(), strings)
+        val nextClient = SettingsRelayClient(relayUrl.trim().ifBlank { DEFAULT_RELAY_URL }, apiKey.trim(), strings, prefs.getBoolean(PREF_E2E_REQUIRED, false))
         relayClient = nextClient
         nextClient.connect { connectError ->
             if (connectError != null) {
@@ -2247,6 +2248,7 @@ private class SettingsRelayClient(
     private val relayUrl: String,
     private val apiKey: String,
     private val strings: AppStrings,
+    private val e2eRequired: Boolean = false,
 ) {
     private val client = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
@@ -2293,7 +2295,7 @@ private class SettingsRelayClient(
                         } else {
                             callback("E2E proof mismatch")
                         }
-                    } else if (error != null && error.contains("Invalid API key")) {
+                    } else if (error != null && error.contains("Invalid API key") && !e2eRequired) {
                         // 旧版 relay 不认识 e2e 握手 → 回退明文 auth
                         e2eUnsupported = true
                         main.post {
