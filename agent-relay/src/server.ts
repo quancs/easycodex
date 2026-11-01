@@ -38,6 +38,20 @@ import {
   assertReadableFileWithinLimit,
   capGitDiff,
 } from './safety-limits';
+import {
+  clientProof,
+  decryptBuffer,
+  deriveMediaKey,
+  deriveSessionKey,
+  encryptBuffer,
+  generateX25519KeyPair,
+  isLoopbackAddress,
+  serverProof,
+  timingSafeEqualB64,
+  unwrapFrame,
+  verifyMediaRequest,
+  wrapEncryptedFrame,
+} from './e2e-crypto';
 import { permissionModeFromCreateAgentParams } from './permission-modes';
 import { mobileGitStatusPayload, normalizeGitCommitFiles, normalizeGitRestoreFiles } from './git-paths';
 import {
@@ -63,6 +77,31 @@ interface ClientSession {
   clientId: string | null;
   connectedAt: number;
   remoteAddress: string;
+  /** E2E v1：握手成功后为 true，之后该连接所有帧走 AES-256-GCM */
+  e2e: boolean;
+  sessionKey: Buffer | null;
+}
+
+const REQUIRE_E2E = process.env.EASYCODEX_REQUIRE_E2E === '1';
+
+/** 该连接是否必须使用 E2E 加密（回环连接豁免） */
+function sessionRequiresE2E(session: ClientSession): boolean {
+  return REQUIRE_E2E && !isLoopbackAddress(session.remoteAddress);
+}
+
+/** 按会话加密状态发送：e2e 会话收到 {enc:...} 信封，其余收明文 JSON */
+function sendSessionFrame(session: ClientSession, payloadJson: string) {
+  if (session.ws.readyState !== WebSocket.OPEN) return;
+  if (session.ws.bufferedAmount > RELAY_WS_MAX_BUFFERED_BYTES) {
+    console.warn(`[ws] Closing slow client ${session.clientId || 'unknown'} with ${session.ws.bufferedAmount} buffered bytes.`);
+    session.ws.close(1013, 'Client is too slow');
+    return;
+  }
+  try {
+    session.ws.send(session.e2e && session.sessionKey ? wrapEncryptedFrame(session.sessionKey, payloadJson) : payloadJson);
+  } catch (err) {
+    console.warn('[ws] Failed to send frame:', err);
+  }
 }
 
 interface PendingStreamBatch {
@@ -991,18 +1030,8 @@ function sendStreamEvent(agentId: string, event: string, data: unknown) {
   const message = JSON.stringify(entry);
   for (const session of clients.values()) {
     if (!session.authenticated) continue;
-    if (session.ws.readyState === WebSocket.OPEN) {
-      if (session.ws.bufferedAmount > RELAY_WS_MAX_BUFFERED_BYTES) {
-        console.warn(`[ws] Closing slow client ${session.clientId || 'unknown'} with ${session.ws.bufferedAmount} buffered bytes.`);
-        session.ws.close(1013, 'Client is too slow');
-        continue;
-      }
-      try {
-        session.ws.send(message);
-      } catch (err) {
-        console.warn('[ws] Failed to send stream event:', err);
-      }
-    }
+    // e2e 会话逐人加密（sendSessionFrame 内含背压断连处理）
+    sendSessionFrame(session, message);
   }
 }
 
@@ -1295,12 +1324,69 @@ async function readTextFileChecked(filePath: string): Promise<{ content: string;
   }
 }
 
-app.get('/media/image', async (req, res) => {
+let cachedMediaKey: Buffer | null = null;
+function getMediaKey(): Buffer {
+  if (!cachedMediaKey) cachedMediaKey = deriveMediaKey(config.apiKey);
+  return cachedMediaKey;
+}
+
+/**
+ * 媒体请求鉴权（E2E v1）：
+ * - ?enc=1（E2E 客户端）：必须携带 X-E2E-Timestamp + X-E2E-Sign 签名头，响应体 AES-256-GCM 加密
+ * - 否则走旧版 Bearer/query key；REQUIRE_E2E 且非回环时拒绝明文模式
+ * 返回 'enc' | 'plain' | null（null = 已写错误响应）
+ */
+function authorizeMediaRequest(req: express.Request, res: express.Response): 'enc' | 'plain' | null {
+  if (req.query.enc === '1') {
+    const err = verifyMediaRequest(
+      config.apiKey,
+      req.header('x-e2e-timestamp') ?? undefined,
+      req.header('x-e2e-sign') ?? undefined,
+      req.originalUrl,
+    );
+    if (err) {
+      res.status(401).json({ error: err });
+      return null;
+    }
+    return 'enc';
+  }
+  if (REQUIRE_E2E && !isLoopbackAddress(req.socket.remoteAddress)) {
+    res.status(401).json({ error: 'E2E encryption required by this relay' });
+    return null;
+  }
   const key = extractAuthKey(req);
   if (!isValidApiKey(key)) {
     res.status(401).json({ error: 'Unauthorized' });
+    return null;
+  }
+  return 'plain';
+}
+
+/** 按模式发送媒体内容：enc = AES-256-GCM 加密体，plain = 原始流 */
+async function sendMediaContent(
+  res: express.Response,
+  mode: 'enc' | 'plain',
+  handle: fsPromises.FileHandle,
+  plainContentType: string,
+  extraHeaders: Record<string, string> = {},
+) {
+  res.setHeader('Cache-Control', 'no-store');
+  for (const [k, v] of Object.entries(extraHeaders)) res.setHeader(k, v);
+  if (mode === 'enc') {
+    const data = await handle.readFile();
+    await handle.close();
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-E2E-Encrypted', 'aes-256-gcm');
+    res.send(encryptBuffer(getMediaKey(), data));
     return;
   }
+  res.setHeader('Content-Type', plainContentType);
+  handle.createReadStream({ autoClose: true }).pipe(res);
+}
+
+app.get('/media/image', async (req, res) => {
+  const mediaMode = authorizeMediaRequest(req, res);
+  if (!mediaMode) return;
 
   const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
   if (!rawPath) {
@@ -1340,20 +1426,15 @@ app.get('/media/image', async (req, res) => {
       res.status(413).json({ error: err instanceof Error ? err.message : String(err) });
       return;
     }
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'no-store');
-    handle.createReadStream({ autoClose: true }).pipe(res);
+    await sendMediaContent(res, mediaMode, handle, contentType);
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
 app.get('/media/file', async (req, res) => {
-  const key = extractAuthKey(req);
-  if (!isValidApiKey(key)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
+  const mediaMode = authorizeMediaRequest(req, res);
+  if (!mediaMode) return;
 
   const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
   if (!rawPath) {
@@ -1388,10 +1469,9 @@ app.get('/media/file', async (req, res) => {
       res.status(413).json({ error: err instanceof Error ? err.message : String(err) });
       return;
     }
-    res.setHeader('Content-Type', fileContentType(realTarget));
-    res.setHeader('Content-Disposition', `inline; filename="${safeContentDispositionName(realTarget)}"`);
-    res.setHeader('Cache-Control', 'no-store');
-    handle.createReadStream({ autoClose: true }).pipe(res);
+    await sendMediaContent(res, mediaMode, handle, fileContentType(realTarget), {
+      'Content-Disposition': `inline; filename="${safeContentDispositionName(realTarget)}"`,
+    });
   } catch (err) {
     res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -1448,6 +1528,8 @@ wss.on('connection', (ws, req) => {
     clientId: null,
     connectedAt: Date.now(),
     remoteAddress,
+    e2e: false,
+    sessionKey: null,
   };
   clients.set(ws, session);
   console.log(`Client connected from ${remoteAddress}`);
@@ -1462,7 +1544,8 @@ wss.on('connection', (ws, req) => {
   ws.on('message', async (raw) => {
     let msg: { action: string; params?: Record<string, unknown>; requestId?: string };
     try {
-      msg = JSON.parse(raw.toString());
+      // e2e 会话：所有帧都是 {enc:...} 信封，先解密再解析
+      msg = JSON.parse(unwrapFrame(session.sessionKey, raw.toString()));
     } catch {
       ws.send(JSON.stringify({ type: 'error', error: 'Invalid JSON' }));
       return;
@@ -1471,17 +1554,7 @@ wss.on('connection', (ws, req) => {
     const { action, params = {}, requestId } = msg;
 
     const sendToClient = (payload: unknown) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      if (ws.bufferedAmount > RELAY_WS_MAX_BUFFERED_BYTES) {
-        console.warn(`[ws] Closing slow client ${session.clientId || 'unauthenticated'} with ${ws.bufferedAmount} buffered bytes.`);
-        ws.close(1013, 'Client is too slow');
-        return;
-      }
-      try {
-        ws.send(JSON.stringify(payload));
-      } catch (err) {
-        console.warn(`Failed to send response to ${session.clientId || 'unauthenticated'}:`, err);
-      }
+      sendSessionFrame(session, JSON.stringify(payload));
     };
 
     const reply = (data: unknown) => {
@@ -1499,8 +1572,54 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
-      const key = typeof params.key === 'string' ? params.key : '';
       const requestedClientId = typeof params.clientId === 'string' ? params.clientId.trim() : '';
+      const wantsE2E = params.e2e === true;
+
+      // E2E v1 握手：apiKey 不上线，HMAC 证明 + X25519 派生会话密钥
+      if (wantsE2E) {
+        const clientPub = typeof params.clientPub === 'string' ? params.clientPub : '';
+        const proof = typeof params.hmac === 'string' ? params.hmac : '';
+        if (!clientPub || !timingSafeEqualB64(clientProof(config.apiKey, clientPub), proof)) {
+          replyError('Invalid API key');
+          ws.close(4001, 'Invalid API key');
+          return;
+        }
+        let serverKeys: ReturnType<typeof generateX25519KeyPair>;
+        let e2eSessionKey: Buffer;
+        try {
+          serverKeys = generateX25519KeyPair();
+          e2eSessionKey = deriveSessionKey(serverKeys.privateKey, clientPub, serverKeys.publicKeyB64, true);
+        } catch {
+          replyError('Invalid E2E client public key');
+          ws.close(4001, 'Invalid E2E handshake');
+          return;
+        }
+        session.authenticated = true;
+        session.clientId = requestedClientId || crypto.randomUUID();
+        clearTimeout(authTimeout);
+        console.log(`Authenticated client ${session.clientId} (${remoteAddress}) [E2E]`);
+        emitClientState('authenticated');
+        updateCodexThreadPoller();
+        // 握手应答本身仍是明文（session.e2e 尚未置位），之后的帧全部加密
+        reply({
+          ok: true,
+          clientId: session.clientId,
+          e2e: true,
+          serverPub: serverKeys.publicKeyB64,
+          hmac: serverProof(config.apiKey, serverKeys.publicKeyB64, clientPub),
+        });
+        session.e2e = true;
+        session.sessionKey = e2eSessionKey;
+        return;
+      }
+
+      if (sessionRequiresE2E(session)) {
+        replyError('E2E encryption required by this relay');
+        ws.close(4001, 'E2E required');
+        return;
+      }
+
+      const key = typeof params.key === 'string' ? params.key : '';
       if (!isValidApiKey(key)) {
         replyError('Invalid API key');
         ws.close(4001, 'Invalid API key');
