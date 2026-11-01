@@ -147,22 +147,8 @@ fun validateRelayEndpoint(value: String, invalidRelayUrl: String): String? {
     if (host.isBlank()) return invalidRelayUrl
     if (scheme == "wss") return null
     if (scheme != "ws") return "Relay 地址必须使用 ws:// 或 wss://"
-    val privateOrLocal = host == "localhost" ||
-        host == "::1" ||
-        host == "10.0.2.2" ||
-        isPrivateOrLoopbackIpv4(host)
-    return if (privateOrLocal) null else "出于安全考虑，ws:// 只允许连接 localhost、模拟器或局域网地址；公网地址请使用 wss://。"
-}
-
-private fun isPrivateOrLoopbackIpv4(host: String): Boolean {
-    val parts = host.split(".")
-    if (parts.size != 4) return false
-    val octets = parts.map { it.toIntOrNull() ?: return false }
-    if (octets.any { it !in 0..255 }) return false
-    return octets[0] == 10 ||
-        octets[0] == 127 ||
-        (octets[0] == 192 && octets[1] == 168) ||
-        (octets[0] == 172 && octets[1] in 16..31)
+    // E2E v1：业务帧端到端加密（apiKey 不上线），公网 ws:// 经 frp 等中转亦安全，放行
+    return null
 }
 
 private fun inferRelayUrlFromHttpConnectUri(uri: URI, scheme: String): String? {

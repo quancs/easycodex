@@ -498,6 +498,10 @@ class EasyCodexController(private val context: android.content.Context) {
     private var agentsRefreshInFlight = false
     private var agentsRefreshQueued = false
     private var agentsRefreshRunnable: Runnable? = null
+    // E2E v1：握手状态与已建立的加密会话（仅当前连接有效，重连时重建）
+    private var e2eHandshake: E2ECrypto.Handshake? = null
+    private var e2eSession: E2ECrypto.Session? = null
+    private var e2eUnsupported = false
     private var appInForeground = true
     private val prefs = context.getSharedPreferences("easycodex", android.content.Context.MODE_PRIVATE)
         .also(::applyDaylightThemeDefault)
@@ -807,6 +811,8 @@ class EasyCodexController(private val context: android.content.Context) {
         cancelReconnect()
         cancelAgentsRefresh()
         streamingAgentIds.clear()
+        e2eHandshake = null
+        e2eSession = null
         webSocket?.close(1000, "Reconnect")
         val generation = ++connectionGeneration
         if (relayUrl.isBlank() || apiKey.isBlank()) {
@@ -832,19 +838,40 @@ class EasyCodexController(private val context: android.content.Context) {
         }
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                sendRaw("auth", mapOf("key" to apiKey, "clientId" to clientId())) { _, error ->
+                if (e2eUnsupported) {
+                    sendLegacyAuth(generation)
+                    return
+                }
+                // E2E v1：X25519 握手 + apiKey HMAC 证明（apiKey 不上线）
+                val handshake = E2ECrypto.Handshake(apiKey)
+                e2eHandshake = handshake
+                sendRaw(
+                    "auth",
+                    mapOf(
+                        "clientId" to clientId(),
+                        "e2e" to true,
+                        "clientPub" to handshake.clientPubB64,
+                        "hmac" to handshake.proofB64,
+                    ),
+                ) { data, error ->
                     if (generation != connectionGeneration) return@sendRaw
-                    if (error == null) {
-                        reconnectAttempts = 0
-                        connectionStatus = "connected"
-                        statusText = strings.connected
-                        refreshHostHealth()
-                        syncClientLanguage()
-                        refreshRuntimeOptions()
-                        refreshAgents()
-                        replayMissedStream()
-                        flushPendingQuickReplies()
-                        flushPendingApprovalResponses()
+                    val e2eAccepted = error == null && data?.optBoolean("e2e") == true
+                    if (e2eAccepted) {
+                        val session = handshake.complete(
+                            data!!.optString("serverPub"),
+                            data.optString("hmac"),
+                        )
+                        if (session != null) {
+                            e2eSession = session
+                            onAuthenticated(generation)
+                        } else {
+                            connectionStatus = "disconnected"
+                            statusText = localizedConnectionError("E2E proof mismatch")
+                        }
+                    } else if (error != null && error.contains("Invalid API key")) {
+                        // 旧版 relay 不认识 e2e 握手（把无 key 的 auth 判为 key 错误）→ 回退明文 auth
+                        e2eUnsupported = true
+                        main.post { if (generation == connectionGeneration) connect() }
                     } else {
                         connectionStatus = "disconnected"
                         statusText = localizedConnectionError(error)
@@ -853,7 +880,11 @@ class EasyCodexController(private val context: android.content.Context) {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                val msg = runCatching { JSONObject(text) }.getOrNull() ?: return
+                // e2e 会话：所有帧为 {enc:...} 信封，先解密再解析
+                val plain = e2eSession?.let { session ->
+                    runCatching { session.decryptEnvelope(text) }.getOrNull()
+                } ?: text
+                val msg = runCatching { JSONObject(plain) }.getOrNull() ?: return
                 main.post {
                     if (generation == connectionGeneration) handleIncoming(msg)
                 }
@@ -886,6 +917,34 @@ class EasyCodexController(private val context: android.content.Context) {
                 }
             }
         })
+    }
+
+    /** 旧版明文 auth（兼容不支持 E2E 的旧 relay） */
+    private fun sendLegacyAuth(generation: Int) {
+        sendRaw("auth", mapOf("key" to apiKey, "clientId" to clientId())) { _, error ->
+            if (generation != connectionGeneration) return@sendRaw
+            if (error == null) {
+                onAuthenticated(generation)
+            } else {
+                connectionStatus = "disconnected"
+                statusText = localizedConnectionError(error)
+            }
+        }
+    }
+
+    /** 认证成功后的统一收尾（e2e 与明文路径共用） */
+    private fun onAuthenticated(generation: Int) {
+        if (generation != connectionGeneration) return
+        reconnectAttempts = 0
+        connectionStatus = "connected"
+        statusText = strings.connected
+        refreshHostHealth()
+        syncClientLanguage()
+        refreshRuntimeOptions()
+        refreshAgents()
+        replayMissedStream()
+        flushPendingQuickReplies()
+        flushPendingApprovalResponses()
     }
 
     fun disconnect() {
@@ -3043,7 +3102,9 @@ class EasyCodexController(private val context: android.content.Context) {
             .put("action", action)
             .put("requestId", requestId)
             .put("params", JSONObject(params))
-        if (!socket.send(body.toString())) {
+        // e2e 会话：出站帧加密为 {enc:...} 信封
+        val wire = e2eSession?.encryptEnvelope(body.toString()) ?: body.toString()
+        if (!socket.send(wire)) {
             pending.remove(requestId)
             callback(null, strings.connectionClosed)
             return

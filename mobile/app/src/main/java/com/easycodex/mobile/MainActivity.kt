@@ -322,6 +322,8 @@ private val COMMON_EMOJI = listOf(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 鸿蒙兜底：第三方库（GMS dynamite 等）在后台线程崩溃时先记录日志，便于定位
+        installHarmonyOsCrashLogger()
         val importedConnection = applyEasyCodexConnectionUri(this, intent?.data)
         setContent {
             EasyCodexApp(
@@ -339,20 +341,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private fun installHarmonyOsCrashLogger() {
+    val previous = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+        android.util.Log.e("EasyCodex", "Uncaught exception on thread ${thread.name}", throwable)
+        // 链式交还给系统默认处理（不吞异常，保证崩溃可见）
+        previous?.uncaughtException(thread, throwable)
+    }
+}
+
 private fun buildSystemVoiceInputIntent(context: Context, prompt: String): Intent {
     val baseIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
         putExtra(RecognizerIntent.EXTRA_PROMPT, prompt)
     }
+    // 鸿蒙 PackageManager 返回的 ResolveInfo 字段可能为 null，mapNotNull 固化非空约束
     val preferredActivity = context.packageManager
         .queryIntentActivities(baseIntent, 0)
-        .filter { it.activityInfo?.packageName?.isNotBlank() == true }
-        .minByOrNull { voiceRecognizerPriority(it.activityInfo.packageName) }
+        .mapNotNull { resolveInfo ->
+            val info = resolveInfo.activityInfo ?: return@mapNotNull null
+            val packageName = info.packageName?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val className = info.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            Triple(packageName, className, voiceRecognizerPriority(packageName))
+        }
+        .minByOrNull { it.third }
 
     return if (preferredActivity != null) {
         Intent(baseIntent).apply {
-            component = ComponentName(preferredActivity.activityInfo.packageName, preferredActivity.activityInfo.name)
+            component = ComponentName(preferredActivity.first, preferredActivity.second)
         }
     } else {
         baseIntent

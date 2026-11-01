@@ -114,6 +114,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -605,9 +607,32 @@ fun SettingsApp(onClose: () -> Unit) {
         testSavedConnection(config.relayUrl, config.apiKey)
     }
 
+    /**
+     * GMS 扫码是否可用。鸿蒙/无 GMS 设备上 ML Kit dynamite 加载会在 GMS 内部
+     * 后台线程抛 NPE（绕过 runCatching 直接崩进程），必须在调用前拦截。
+     */
+    private fun isGmsScanAvailable(activity: Activity): Boolean {
+        val manufacturer = Build.MANUFACTURER.orEmpty()
+        val brand = Build.BRAND.orEmpty()
+        if (manufacturer.equals("HUAWEI", ignoreCase = true) ||
+            brand.equals("HUAWEI", ignoreCase = true) ||
+            brand.equals("HONOR", ignoreCase = true)
+        ) {
+            return false
+        }
+        return runCatching {
+            GoogleApiAvailability.getInstance()
+                .isGooglePlayServicesAvailable(activity) == ConnectionResult.SUCCESS
+        }.getOrDefault(false)
+    }
+
     fun scanRelayQr() {
         val activity = context as? Activity
         if (activity == null) {
+            connectionStatus = strings.scanUnavailable
+            return
+        }
+        if (!isGmsScanAvailable(activity)) {
             connectionStatus = strings.scanUnavailable
             return
         }
@@ -720,8 +745,12 @@ fun SettingsApp(onClose: () -> Unit) {
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
             .setAllowedOverMetered(true)
             .setAllowedOverRoaming(false)
-        manager.enqueue(request)
-        appStatus = strings.downloadStarted(version)
+        // 华为/鸿蒙部分机型 DownloadProvider 被替换或禁用，enqueue 可能直接抛异常
+        runCatching { manager.enqueue(request) }
+            .onSuccess { appStatus = strings.downloadStarted(version) }
+            .onFailure { error ->
+                appStatus = error.message ?: strings.downloadManagerUnavailable
+            }
     }
 
     fun checkForUpdates() {
@@ -2227,6 +2256,9 @@ private class SettingsRelayClient(
     private val pendingTimeoutRunnables = ConcurrentHashMap<String, Runnable>()
     private var socket: WebSocket? = null
     private var requestCounter = 0
+    private var e2eHandshake: E2ECrypto.Handshake? = null
+    private var e2eSession: E2ECrypto.Session? = null
+    private var e2eUnsupported = false
 
     fun connect(callback: (String?) -> Unit) {
         val request = try {
@@ -2237,8 +2269,40 @@ private class SettingsRelayClient(
         }
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                sendRaw("auth", mapOf("key" to apiKey, "clientId" to "settings")) { _, error ->
-                    callback(error)
+                if (e2eUnsupported) {
+                    sendLegacyAuth(callback)
+                    return
+                }
+                // E2E v1：apiKey 不上线，HMAC 证明 + X25519 派生会话密钥
+                val handshake = E2ECrypto.Handshake(apiKey)
+                e2eHandshake = handshake
+                sendRaw(
+                    "auth",
+                    mapOf(
+                        "clientId" to "settings",
+                        "e2e" to true,
+                        "clientPub" to handshake.clientPubB64,
+                        "hmac" to handshake.proofB64,
+                    ),
+                ) { data, error ->
+                    if (error == null && data?.optBoolean("e2e") == true) {
+                        val session = handshake.complete(data.optString("serverPub"), data.optString("hmac"))
+                        if (session != null) {
+                            e2eSession = session
+                            callback(null)
+                        } else {
+                            callback("E2E proof mismatch")
+                        }
+                    } else if (error != null && error.contains("Invalid API key")) {
+                        // 旧版 relay 不认识 e2e 握手 → 回退明文 auth
+                        e2eUnsupported = true
+                        main.post {
+                            socket?.close(1000, "Retry legacy auth")
+                            connect(callback)
+                        }
+                    } else {
+                        callback(error)
+                    }
                 }
             }
 
@@ -2303,6 +2367,13 @@ private class SettingsRelayClient(
         failPending(strings.connectionClosed)
     }
 
+    /** 旧版明文 auth（兼容不支持 E2E 的旧 relay） */
+    private fun sendLegacyAuth(callback: (String?) -> Unit) {
+        sendRaw("auth", mapOf("key" to apiKey, "clientId" to "settings")) { _, error ->
+            callback(error)
+        }
+    }
+
     private fun sendRaw(
         action: String,
         params: Map<String, Any?> = emptyMap(),
@@ -2315,13 +2386,13 @@ private class SettingsRelayClient(
         }
         val requestId = "settings_${++requestCounter}"
         pending[requestId] = callback
-        val sent = activeSocket.send(
-            JSONObject()
-                .put("action", action)
-                .put("requestId", requestId)
-                .put("params", JSONObject(params))
-                .toString(),
-        )
+        val body = JSONObject()
+            .put("action", action)
+            .put("requestId", requestId)
+            .put("params", JSONObject(params))
+            .toString()
+        // e2e 会话：出站帧加密为 {enc:...} 信封
+        val sent = activeSocket.send(e2eSession?.encryptEnvelope(body) ?: body)
         if (!sent) {
             pending.remove(requestId)
             callback(null, strings.connectionClosed)
@@ -2337,7 +2408,11 @@ private class SettingsRelayClient(
     }
 
     private fun handleMessage(raw: String) {
-        val msg = runCatching { JSONObject(raw) }.getOrNull() ?: return
+        // e2e 会话：入站帧先解密
+        val plain = e2eSession?.let { session ->
+            runCatching { session.decryptEnvelope(raw) }.getOrNull()
+        } ?: raw
+        val msg = runCatching { JSONObject(plain) }.getOrNull() ?: return
         val requestId = msg.optString("requestId")
         if (requestId.isBlank()) return
         pendingTimeoutRunnables.remove(requestId)?.let { main.removeCallbacks(it) }

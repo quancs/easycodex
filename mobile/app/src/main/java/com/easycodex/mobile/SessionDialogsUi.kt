@@ -403,7 +403,10 @@ fun DiffReviewDialog(
     }
     fun copyText(text: String) {
         clipboardScope.launch {
-            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex", text)))
+            // 鸿蒙剪贴板管控更严格，setClipEntry 可能经系统服务抛异常，协程内兜底
+            runCatching {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex", text)))
+            }
         }
     }
     val displayDiff = remember(review.diff, review.selectedFile) {

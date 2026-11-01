@@ -1377,6 +1377,7 @@ async function sendMediaContent(
     await handle.close();
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('X-E2E-Encrypted', 'aes-256-gcm');
+    res.setHeader('X-Original-Content-Type', plainContentType);
     res.send(encryptBuffer(getMediaKey(), data));
     return;
   }

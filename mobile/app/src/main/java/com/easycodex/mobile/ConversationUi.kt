@@ -1753,7 +1753,10 @@ private fun DetailMessageCard(
     val clipboardScope = rememberCoroutineScope()
     fun copyText(text: String) {
         clipboardScope.launch {
-            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex", text)))
+            // 鸿蒙剪贴板管控更严格，setClipEntry 可能经系统服务抛异常，协程内兜底
+            runCatching {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex", text)))
+            }
         }
     }
     fun openDirectSource(source: String) {
@@ -2693,6 +2696,21 @@ private fun mimeTypeForArtifact(name: String, contentType: String): String {
     }
 }
 
+/** 为 relay 媒体 URL 追加 enc=1 并返回 (最终URL, 是否加密)；非 relay 媒体原样返回 */
+private fun withRelayMediaEncryption(url: String, relayBase: String, apiKey: String, mediaPath: String): Pair<String, Boolean> {
+    if (apiKey.isBlank() || !url.startsWith("$relayBase$mediaPath?", ignoreCase = true)) return url to false
+    return "$url&enc=1" to true
+}
+
+/** 给媒体请求加 E2E 签名头（apiKey 不上线）；originalUrl 必须与服务端 req.originalUrl 一致 */
+private fun signRelayMediaRequest(connection: HttpURLConnection, url: String, apiKey: String) {
+    val parsed = URL(url)
+    val originalUrl = if (parsed.query != null) "${parsed.path}?${parsed.query}" else parsed.path
+    val timestamp = E2ECrypto.mediaTimestamp()
+    connection.setRequestProperty("X-E2E-Timestamp", timestamp)
+    connection.setRequestProperty("X-E2E-Sign", E2ECrypto.mediaSignature(apiKey, timestamp, originalUrl))
+}
+
 private fun downloadArtifactSourceToCache(
     context: android.content.Context,
     source: String,
@@ -2700,22 +2718,34 @@ private fun downloadArtifactSourceToCache(
     apiKey: String,
 ): CachedArtifactSource? {
     return runCatching {
-        val loadSource = artifactFileLoadSource(source, relayUrl)
-        if (!loadSource.isHttpImageSource()) return null
         val relayBase = relayHttpBase(relayUrl)
+        val rawSource = artifactFileLoadSource(source, relayUrl)
+        val (loadSource, encrypted) = withRelayMediaEncryption(rawSource, relayBase, apiKey, "/media/file")
+        if (!loadSource.isHttpImageSource()) return null
         val connection = (URL(loadSource).openConnection() as? HttpURLConnection) ?: return null
         connection.useCaches = false
         connection.instanceFollowRedirects = false
-        if (apiKey.isNotBlank() && loadSource.startsWith("$relayBase/media/file?", ignoreCase = true)) {
+        if (encrypted) {
+            signRelayMediaRequest(connection, loadSource, apiKey)
+        } else if (apiKey.isNotBlank() && loadSource.startsWith("$relayBase/media/file?", ignoreCase = true)) {
             connection.setRequestProperty("Authorization", "Bearer $apiKey")
         }
         connection.connectTimeout = MARKDOWN_IMAGE_CONNECT_TIMEOUT_MS
         connection.readTimeout = MARKDOWN_IMAGE_READ_TIMEOUT_MS
         if (connection.responseCode !in 200..299) return null
-        val contentType = connection.contentType.orEmpty()
-        val bytes = connection.inputStream.use { stream ->
+        val contentType = if (encrypted) {
+            connection.getHeaderField("X-Original-Content-Type").orEmpty()
+        } else {
+            connection.contentType.orEmpty()
+        }
+        val rawBytes = connection.inputStream.use { stream ->
             readBytesWithinLimit(stream, MARKDOWN_IMAGE_MAX_BYTES)
         } ?: return null
+        val bytes = if (encrypted) {
+            runCatching { E2ECrypto.decryptMedia(E2ECrypto.mediaKey(apiKey), rawBytes) }.getOrNull() ?: return null
+        } else {
+            rawBytes
+        }
         val fileName = artifactCacheFileName(source, contentType)
         val cacheDir = File(context.cacheDir, "artifacts").apply { mkdirs() }
         val target = File(cacheDir, fileName)
@@ -2740,9 +2770,15 @@ private fun readBytesWithinLimit(input: java.io.InputStream, maxBytes: Int): Byt
 }
 
 private fun decodeHttpImage(source: String, apiKey: String, relayHttpBase: String): android.graphics.Bitmap? {
-    val connection = URL(source).openConnection()
+    val (loadSource, encrypted) = withRelayMediaEncryption(source, relayHttpBase, apiKey, "/media/image")
+    val connection = URL(loadSource).openConnection()
     connection.useCaches = false
-    if (apiKey.isNotBlank() && source.startsWith("$relayHttpBase/media/image?", ignoreCase = true)) {
+    if (encrypted) {
+        (connection as? HttpURLConnection)?.let { http ->
+            http.instanceFollowRedirects = false
+            signRelayMediaRequest(http, loadSource, apiKey)
+        }
+    } else if (apiKey.isNotBlank() && source.startsWith("$relayHttpBase/media/image?", ignoreCase = true)) {
         connection.setRequestProperty("Authorization", "Bearer $apiKey")
         (connection as? HttpURLConnection)?.instanceFollowRedirects = false
     }
@@ -2750,9 +2786,14 @@ private fun decodeHttpImage(source: String, apiKey: String, relayHttpBase: Strin
     connection.readTimeout = MARKDOWN_IMAGE_READ_TIMEOUT_MS
     val contentLength = connection.contentLengthLong
     if (contentLength > MARKDOWN_IMAGE_MAX_BYTES) return null
-    val bytes = connection.getInputStream().use { stream ->
+    val rawBytes = connection.getInputStream().use { stream ->
         readBytesWithinLimit(stream, MARKDOWN_IMAGE_MAX_BYTES)
     } ?: return null
+    val bytes = if (encrypted) {
+        runCatching { E2ECrypto.decryptMedia(E2ECrypto.mediaKey(apiKey), rawBytes) }.getOrNull() ?: return null
+    } else {
+        rawBytes
+    }
     return sampledBitmapFromBytes(bytes, ATTACHMENT_PREVIEW_MAX_DIMENSION)
 }
 
@@ -2819,7 +2860,10 @@ private fun MarkdownCodeBlock(block: MarkdownBlock) {
     val clipboardScope = rememberCoroutineScope()
     fun copyText(text: String) {
         clipboardScope.launch {
-            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex", text)))
+            // 鸿蒙剪贴板管控更严格，setClipEntry 可能经系统服务抛异常，协程内兜底
+            runCatching {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex", text)))
+            }
         }
     }
     val codeScroll = rememberScrollState()

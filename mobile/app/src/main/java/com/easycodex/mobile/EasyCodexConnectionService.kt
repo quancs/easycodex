@@ -267,10 +267,13 @@ class EasyCodexConnectionService : Service() {
         fun start(context: Context) {
             val appContext = context.applicationContext
             val intent = Intent(appContext, EasyCodexConnectionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
+            // 鸿蒙对后台启动 FGS 限制更激进且 framework 层可能抛 NPE，失败时降级为不启动
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
             }
         }
 
