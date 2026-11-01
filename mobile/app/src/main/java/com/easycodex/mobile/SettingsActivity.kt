@@ -612,7 +612,7 @@ fun SettingsApp(onClose: () -> Unit) {
      * GMS 扫码是否可用。鸿蒙/无 GMS 设备上 ML Kit dynamite 加载会在 GMS 内部
      * 后台线程抛 NPE（绕过 runCatching 直接崩进程），必须在调用前拦截。
      */
-    private fun isGmsScanAvailable(activity: Activity): Boolean {
+    fun isGmsScanAvailable(activity: Activity): Boolean {
         val manufacturer = Build.MANUFACTURER.orEmpty()
         val brand = Build.BRAND.orEmpty()
         if (manufacturer.equals("HUAWEI", ignoreCase = true) ||
