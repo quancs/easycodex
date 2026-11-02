@@ -1253,6 +1253,8 @@ async function appState() {
   const config = loadDesktopConfig();
   const apiKey = loadApiKey();
   const details = connectionDetails(config.port, apiKey, tunnelManager.publicRelayUrl() || undefined);
+  // 桌面任务面板永远走本机回环，不用公网地址（自签证书 + 绕行 frps 都会导致失败）
+  const localRelayUrl = `ws://127.0.0.1:${config.port}`;
   const portStatus = await checkPortStatus(config.port).catch(() => ({
     available: false,
     reclaimable: false,
@@ -1288,6 +1290,7 @@ async function appState() {
     supportedUpdateChannels,
     effectiveLanguage: effectiveLanguage(config, mergeRelayEventHealth(lastHealth)),
     supportedLanguages,
+    localRelayUrl,
     qrDataUrl: await QRCode.toDataURL(details.deepLink, {
       margin: 1,
       width: 360,

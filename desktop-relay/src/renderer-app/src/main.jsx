@@ -697,7 +697,9 @@ function useRelayWorkbench(api, appendLog, currentState) {
     };
 
     setSocketStatus('offline', '正在连接任务流...');
-    const socket = new WebSocket(currentState.relayUrl);
+    // 桌面任务面板永远走本机回环（公网地址是给手机的；自签证书会让 Electron 拒绝）
+    const socketUrl = currentState.localRelayUrl || currentState.relayUrl;
+    const socket = new WebSocket(socketUrl);
     socketRef.current = socket;
     socket.addEventListener('open', () => {
       socket.send(JSON.stringify({
