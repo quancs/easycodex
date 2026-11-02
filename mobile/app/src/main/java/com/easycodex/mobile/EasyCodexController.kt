@@ -891,11 +891,13 @@ class EasyCodexController(private val context: android.content.Context) {
                     ),
                 ) { data, error ->
                     if (generation != connectionGeneration) return@sendRaw
-                    val e2eAccepted = error == null && data?.optBoolean("e2e") == true
+                    // 回调收到的是整个响应信封 {type,action,requestId,data:{...}}，e2e 字段在内层 data 里
+                    val authData = data?.optJSONObject("data")
+                    val e2eAccepted = error == null && authData?.optBoolean("e2e") == true
                     if (e2eAccepted) {
                         val session = handshake.complete(
-                            data!!.optString("serverPub"),
-                            data.optString("hmac"),
+                            authData!!.optString("serverPub"),
+                            authData.optString("hmac"),
                         )
                         if (session != null) {
                             e2eSession = session

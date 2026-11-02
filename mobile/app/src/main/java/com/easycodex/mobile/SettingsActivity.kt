@@ -2345,8 +2345,10 @@ private class SettingsRelayClient(
                         "hmac" to handshake.proofB64,
                     ),
                 ) { data, error ->
-                    if (error == null && data?.optBoolean("e2e") == true) {
-                        val session = handshake.complete(data.optString("serverPub"), data.optString("hmac"))
+                    // 回调是整个响应信封，e2e 字段在内层 data 里
+                    val authData = data?.optJSONObject("data")
+                    if (error == null && authData?.optBoolean("e2e") == true) {
+                        val session = handshake.complete(authData.optString("serverPub"), authData.optString("hmac"))
                         if (session != null) {
                             e2eSession = session
                             callback(null)
