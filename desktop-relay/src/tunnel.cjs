@@ -96,6 +96,14 @@ function createTunnelManager(deps) {
     return `wss://${config.serverAddr}:${config.remotePort}`;
   }
 
+  /** 隧道配置完整且启用（不依赖瞬时连接状态，避免二维码在公网/局域网地址间抖动） */
+  function publicRelayUrlIfConfigured() {
+    const config = tunnelConfig();
+    if (!config.enabled || !config.serverAddr) return '';
+    if (config.proxyType === 'http') return config.subdomain ? publicRelayUrl(config) : '';
+    return config.remotePort ? publicRelayUrl(config) : '';
+  }
+
   function downloadBase(config) {
     // downloadBase 支持镜像前缀（如 https://ghfast.top/https://github.com/...）
     return config.downloadBase || GITHUB_DOWNLOAD;
@@ -232,10 +240,13 @@ function createTunnelManager(deps) {
     appendLog(`Starting frpc tunnel → ${config.serverAddr}:${config.remotePort} (local ${relayPort})...`);
     await broadcastState();
     frpcProcess = spawn(frpcPath, ['-c', tomlPath], { shell: false, windowsHide: true });
+    // stdout 按块到达，关键日志行可能被切断——先攒进滚动缓冲再检测
+    let stdoutBuffer = '';
     frpcProcess.stdout.on('data', (chunk) => {
       const text = chunk.toString();
       appendLog(`[frpc] ${text.trim()}`);
-      if (status === 'starting' && text.includes('start proxy success')) {
+      stdoutBuffer = (stdoutBuffer + text).slice(-8192);
+      if (status === 'starting' && stdoutBuffer.includes('start proxy success')) {
         status = 'online';
         restartAttempt = 0;
         appendLog(`Tunnel online: ${publicRelayUrl(config)}`);
@@ -298,7 +309,7 @@ function createTunnelManager(deps) {
 
   return {
     getState,
-    publicRelayUrl: () => (status === 'online' ? publicRelayUrl(tunnelConfig()) : ''),
+    publicRelayUrl: publicRelayUrlIfConfigured,
     isOnline: () => status === 'online',
     saveTunnelConfig,
     startTunnel,
