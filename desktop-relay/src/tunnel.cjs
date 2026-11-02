@@ -45,6 +45,17 @@ function cleanTunnelConfig(input) {
     subdomain: typeof raw.subdomain === 'string' ? raw.subdomain.trim() : '',
     remotePort: Number.isFinite(Number(raw.remotePort)) && Number(raw.remotePort) > 0 ? Number(raw.remotePort) : 0,
     downloadBase: typeof raw.downloadBase === 'string' ? raw.downloadBase.trim() : '',
+    // 额外转发（自建 frps 场景，如 hapi hub）：[{name, localPort, remotePort}]
+    extraProxies: Array.isArray(raw.extraProxies)
+      ? raw.extraProxies
+          .filter((p) => p && typeof p === 'object')
+          .map((p) => ({
+            name: String(p.name || '').trim(),
+            localPort: Number(p.localPort) || 0,
+            remotePort: Number(p.remotePort) || 0,
+          }))
+          .filter((p) => p.name && p.localPort > 0 && p.remotePort > 0)
+      : [],
   };
 }
 
@@ -204,6 +215,19 @@ function createTunnelManager(deps) {
         'localIP = "127.0.0.1"',
         `localPort = ${relayPort + 1}`,
         `remotePort = ${config.remotePort}`,
+        '',
+      );
+    }
+    // 额外转发（自建 frps：hapi hub 等）
+    for (const p of config.extraProxies) {
+      lines.push(
+        '',
+        '[[proxies]]',
+        `name = ${JSON.stringify(p.name)}`,
+        'type = "tcp"',
+        'localIP = "127.0.0.1"',
+        `localPort = ${p.localPort}`,
+        `remotePort = ${p.remotePort}`,
         '',
       );
     }
