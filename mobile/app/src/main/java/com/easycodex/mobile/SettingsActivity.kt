@@ -608,7 +608,22 @@ fun SettingsApp(onClose: () -> Unit) {
     fun importConnectionConfig(config: EasyCodexConnectionConfig) {
         relayUrl = config.relayUrl
         apiKey = config.apiKey
-        persistConnectionSettings(config.relayUrl, config.apiKey)
+        // 关键：扫码导入必须保留 e2e/tlsfp 配对信息。
+        // persistConnectionSettings 会用空默认值重建 profile（丢掉 tlsfp → 自签证书校验失败），不能走它。
+        val profileId = relayHostIdFor(config.relayUrl.trim())
+        val existing = relayHostProfiles.firstOrNull { it.id == profileId }
+        val profile = profileFromConnectionConfig(config).copy(
+            name = existing?.name?.takeIf { it.isNotBlank() } ?: relayHostNameFor(config.relayUrl.trim()),
+            hostname = existing?.hostname.orEmpty(),
+            platform = existing?.platform.orEmpty(),
+            workspaceRoot = existing?.workspaceRoot.orEmpty(),
+            lastSeen = existing?.lastSeen ?: 0L,
+            warnings = existing?.warnings ?: emptyList(),
+        )
+        saveRelayHostProfile(prefs, profile, makeActive = true)
+        relayHostProfiles = parseRelayHostProfiles(prefs.getString(PREF_RELAY_HOST_PROFILES, "[]"))
+        activeRelayHostId = profile.id
+        markSettingsChanged()
         testSavedConnection(config.relayUrl, config.apiKey)
     }
 
