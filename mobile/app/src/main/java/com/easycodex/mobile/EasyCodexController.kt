@@ -846,10 +846,12 @@ class EasyCodexController(private val context: android.content.Context) {
 
         connectionStatus = "connecting"
         statusText = strings.connectingRelay
+        lastErrorDetail = "stage:connect() url=$relayUrl"
         val relaySecurityError = validateRelayEndpoint(relayUrl, strings)
         if (relaySecurityError != null) {
             connectionStatus = "disconnected"
             statusText = relaySecurityError
+            lastErrorDetail = "stage:validateRelayEndpoint → $relaySecurityError"
             return
         }
         val request = try {
@@ -857,16 +859,27 @@ class EasyCodexController(private val context: android.content.Context) {
         } catch (error: IllegalArgumentException) {
             connectionStatus = "disconnected"
             statusText = strings.invalidRelayUrl
+            lastErrorDetail = "stage:buildRequest → ${error.message}"
             return
         }
+        lastErrorDetail = "stage:opening socket (tlsfp=${if (tlsFingerprint.isBlank()) "empty" else "present"}, e2eRequired=$e2eRequired)"
         webSocket = wsClient().newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                lastErrorDetail = "stage:socket open (http=${response.code}), authing..."
                 if (e2eUnsupported) {
                     sendLegacyAuth(generation)
                     return
                 }
                 // E2E v1：X25519 握手 + apiKey HMAC 证明（apiKey 不上线）
-                val handshake = E2ECrypto.Handshake(apiKey)
+                val handshake = try {
+                    E2ECrypto.Handshake(apiKey)
+                } catch (e: Throwable) {
+                    Log.e("EasyCodex", "E2E handshake init failed", e)
+                    lastErrorDetail = "stage:e2e-init → ${e.javaClass.name}: ${e.message}"
+                    connectionStatus = "disconnected"
+                    statusText = localizedConnectionError(e.message ?: e.javaClass.simpleName)
+                    return
+                }
                 e2eHandshake = handshake
                 sendRaw(
                     "auth",
@@ -899,6 +912,7 @@ class EasyCodexController(private val context: android.content.Context) {
                         e2eUnsupported = true
                         main.post { if (generation == connectionGeneration) connect() }
                     } else {
+                        lastErrorDetail = "stage:auth-reply → error=$error data=$data"
                         connectionStatus = "disconnected"
                         statusText = localizedConnectionError(error)
                     }
