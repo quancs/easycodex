@@ -1033,6 +1033,14 @@ fun EasyCodexApp(importedConnection: Boolean = false, initialAgentId: String? = 
                 status = controller.connectionStatus,
                 detail = controller.statusText,
                 relayUrl = controller.relayUrl,
+                diagnostics = buildString {
+                    append("app: EasyCodex 0.1.7-e2e (fork)\n")
+                    append("device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} / sdk${android.os.Build.VERSION.SDK_INT}\n")
+                    append("relay: ${controller.relayUrl}\n")
+                    append("e2eRequired: ${controller.e2eRequired}, tlsfp: ${if (controller.tlsFingerprint.isBlank()) "(empty!)" else controller.tlsFingerprint.take(12) + "…"}\n")
+                    append("status: ${controller.connectionStatus}\n")
+                    append("raw error:\n").append(controller.lastErrorDetail.ifBlank { "(none)" })
+                },
                 onConfigure = {
                     showTroubleshooting = false
                     openSettings()

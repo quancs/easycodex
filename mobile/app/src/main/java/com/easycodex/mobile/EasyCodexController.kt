@@ -507,6 +507,8 @@ class EasyCodexController(private val context: android.content.Context) {
     private var agentsRefreshInFlight = false
     private var agentsRefreshQueued = false
     private var agentsRefreshRunnable: Runnable? = null
+    /** 最近一次连接失败的原始错误（未本地化），供诊断弹窗一键复制 */
+    var lastErrorDetail by mutableStateOf("")
     // E2E v1：握手状态与已建立的加密会话（仅当前连接有效，重连时重建）
     private var e2eHandshake: E2ECrypto.Handshake? = null
     private var e2eSession: E2ECrypto.Session? = null
@@ -888,6 +890,7 @@ class EasyCodexController(private val context: android.content.Context) {
                             onAuthenticated(generation)
                         } else {
                             Log.e("EasyCodex", "E2E proof mismatch (server hmac verification failed)")
+                            lastErrorDetail = "E2E proof mismatch: server hmac verification failed（apiKey 与服务端不一致？）"
                             connectionStatus = "disconnected"
                             statusText = localizedConnectionError("E2E proof mismatch")
                         }
@@ -920,6 +923,14 @@ class EasyCodexController(private val context: android.content.Context) {
                     if (generation != connectionGeneration) return@post
                     val notifyDisconnected = connectionStatus == "connected"
                     this@EasyCodexController.webSocket = null
+                    lastErrorDetail = buildString {
+                        append("${t.javaClass.name}: ${t.message ?: "(no message)"}")
+                        response?.let { append("\nhttp=${it.code}") }
+                        val cause = t.cause
+                        if (cause != null) append("\ncaused by ${cause.javaClass.name}: ${cause.message}")
+                        append("\n")
+                        append(t.stackTrace.take(5).joinToString("\n") { "  at $it" })
+                    }
                     val error = localizedConnectionError(t.message ?: t.javaClass.simpleName)
                     failPending(error)
                     scheduleReconnect(error, notifyDisconnected)
@@ -931,6 +942,7 @@ class EasyCodexController(private val context: android.content.Context) {
                     if (generation != connectionGeneration) return@post
                     val notifyDisconnected = connectionStatus == "connected"
                     this@EasyCodexController.webSocket = null
+                    lastErrorDetail = "ws closed: code=$code reason=$reason"
                     val error = if (reason.isBlank()) strings.connectionClosed else localizedConnectionError(reason)
                     failPending(error)
                     if (manuallyDisconnected) {

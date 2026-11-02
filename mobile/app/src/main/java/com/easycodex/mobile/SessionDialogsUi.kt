@@ -775,10 +775,14 @@ fun ConnectionTroubleshootingDialog(
     status: String,
     detail: String,
     relayUrl: String,
+    diagnostics: String = "",
     onConfigure: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    var copied by remember { mutableStateOf(false) }
     val statusLabel = when (status) {
         "connected" -> strings.connected
         "connecting" -> strings.connecting
@@ -797,6 +801,18 @@ fun ConnectionTroubleshootingDialog(
                 Text(strings.troubleshootingStepNetwork)
                 Text(strings.troubleshootingStepPort)
                 Text(strings.troubleshootingStepApiKey)
+                if (diagnostics.isNotBlank()) {
+                    // 点击复制完整诊断信息（含原始错误），方便发给开发者
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("EasyCodex诊断", diagnostics)))
+                            }.onSuccess { copied = true }
+                        }
+                    }) {
+                        Text(if (copied) "✓ 已复制，去粘贴发送" else "📋 复制诊断信息（发给别人排查）")
+                    }
+                }
             }
         },
         confirmButton = { Button(onClick = rememberHapticClick(onConfigure)) { Text(strings.openSettings) } },
