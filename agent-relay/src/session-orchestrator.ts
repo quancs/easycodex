@@ -260,6 +260,9 @@ type AgentMessageRecord = {
 };
 
 export interface CodexThreadDetail extends CodexThreadSummary {
+  /** 移动端防爆：消息被截断时为 true */
+  historyTruncated?: boolean;
+  totalMessageCount?: number;
   model: string;
   approvalPolicy: string;
   permissionMode: PermissionMode;
@@ -392,6 +395,23 @@ function sanitizeSubAgentDetail(text: string): string {
   return clean
     .replace(/\b(fork_context|reasoning_effort|agent_type|model)\s*[:=]\s*[^,\n}]+/gi, '$1: [hidden]')
     .replace(/\b(prompt|message)\s*[:=]\s*(['"])[\s\S]*?\2/gi, '$1: [hidden]');
+}
+
+const MOBILE_THREAD_MAX_MESSAGES = Number(process.env.EASY_CODEX_MOBILE_THREAD_MAX_MESSAGES || 300);
+const MOBILE_THREAD_MAX_CHARS = Number(process.env.EASY_CODEX_MOBILE_THREAD_MAX_CHARS || 1_500_000);
+
+/** 移动端线程消息总量封顶：单条截断不够（几千条 × 12KB = 几十MB），按条数+总字符从最新往回保留 */
+export function capMessagesForMobile<T extends { text?: string }>(messages: T[]): { messages: T[]; truncated: boolean; total: number } {
+  const kept: T[] = [];
+  let size = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const len = (typeof m.text === 'string' ? m.text.length : 0) + 512;
+    if (kept.length >= MOBILE_THREAD_MAX_MESSAGES || size + len > MOBILE_THREAD_MAX_CHARS) break;
+    kept.unshift(m);
+    size += len;
+  }
+  return { messages: kept, truncated: kept.length < messages.length, total: messages.length };
 }
 
 export function summarizeMessageForMobile<T extends { type: string; text: string }>(message: T): T {
@@ -3073,6 +3093,7 @@ export class SessionOrchestrator {
     const messages = mergeMessageHistory(turnsToMessages(messageSource), readSessionMessages(thread.path))
       .sort((a, b) => a.timestamp - b.timestamp)
       .map(summarizeMessageForMobile);
+    const cappedMessages = capMessagesForMobile(messages);
     const projectlessThreadIds = codexProjectlessThreadIds();
     const summary = normalizeThreadSummary(
       thread,
@@ -3109,7 +3130,9 @@ export class SessionOrchestrator {
       reasoningEffort,
       activityLabel,
       pendingRequests,
-      messages,
+      messages: cappedMessages.messages,
+      historyTruncated: cappedMessages.truncated,
+      totalMessageCount: cappedMessages.total,
     };
   }
 

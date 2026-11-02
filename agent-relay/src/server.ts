@@ -92,6 +92,14 @@ function sessionRequiresE2E(session: ClientSession): boolean {
 
 /** 按会话加密状态发送：e2e 会话收到 {enc:...} 信封，其余收明文 JSON */
 function sendSessionFrame(session: ClientSession, payloadJson: string) {
+  // 大水排查：超过 1MB 的帧记录动作与大小（定位慢消费者断连的元凶）
+  if (payloadJson.length > 1024 * 1024) {
+    try {
+      const parsed = JSON.parse(payloadJson);
+      const label = parsed.action || parsed.event || parsed.type || 'unknown';
+      console.warn(`[ws] LARGE FRAME ${(payloadJson.length / 1024 / 1024).toFixed(1)}MB action=${label} to=${session.clientId || 'unknown'}`);
+    } catch { /* ignore */ }
+  }
   if (session.ws.readyState !== WebSocket.OPEN) return;
   if (session.ws.bufferedAmount > RELAY_WS_MAX_BUFFERED_BYTES) {
     console.warn(`[ws] Closing slow client ${session.clientId || 'unknown'} with ${session.ws.bufferedAmount} buffered bytes.`);
@@ -1565,6 +1573,7 @@ const handleWsConnection = (ws: WebSocket, req: http.IncomingMessage) => {
   };
   clients.set(ws, session);
   console.log(`Client connected from ${remoteAddress}`);
+  startHeartbeat(ws, session);
 
   const authTimeout = setTimeout(() => {
     if (!session.authenticated && ws.readyState === WebSocket.OPEN) {
@@ -2380,6 +2389,25 @@ const handleWsConnection = (ws: WebSocket, req: http.IncomingMessage) => {
     }
   });
 };
+
+/** 连接级心跳：服务端每 15s 发协议层 ping，保活 NAT/frp 映射；连续两轮无 pong 判定死亡 */
+const WS_PING_INTERVAL_MS = Number(process.env.EASY_CODEX_WS_PING_INTERVAL_MS || 15000);
+
+function startHeartbeat(ws: WebSocket, session: ClientSession) {
+  let alive = true;
+  ws.on('pong', () => { alive = true; });
+  const timer = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!alive) {
+      console.log(`[ws] heartbeat timeout, terminating ${session.clientId || 'unauthenticated'} (${session.remoteAddress})`);
+      ws.terminate();
+      return;
+    }
+    alive = false;
+    try { ws.ping(); } catch { /* 连接已断 */ }
+  }, WS_PING_INTERVAL_MS);
+  ws.on('close', () => clearInterval(timer));
+}
 
 wss.on('connection', handleWsConnection);
 
