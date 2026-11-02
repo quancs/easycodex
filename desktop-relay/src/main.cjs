@@ -1594,8 +1594,15 @@ async function startRelay(input, options = {}) {
   relayOutputBuffer = '';
   relayLogClientIds = new Set();
 
+  // codex 需要经 Clash 代理访问 OpenAI（relay/App 由 launchd 拉起时没有代理环境变量）
+  const proxyEnv = {};
+  if (!process.env.HTTPS_PROXY && !process.env.https_proxy) {
+    proxyEnv.HTTPS_PROXY = 'http://127.0.0.1:7897';
+    proxyEnv.https_proxy = 'http://127.0.0.1:7897';
+  }
   const relayEnv = {
     ...process.env,
+    ...proxyEnv,
     ...(codex.env || {}),
     ...nodeScript.env,
     PORT: String(port),
