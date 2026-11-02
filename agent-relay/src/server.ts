@@ -860,7 +860,6 @@ function stopCliRun(windowId?: string): boolean {
 }
 
 const config = loadOrCreateConfig();
-loadTrustedWorkspaceRoots();
 const relaySessionId = crypto.randomUUID();
 
 const app = express();
@@ -2453,6 +2452,8 @@ function startHeartbeat(ws: WebSocket, session: ClientSession) {
 wss.on('connection', handleWsConnection);
 
 async function startRelayServer(): Promise<void> {
+  // 模块顶层声明顺序限制（Set 在后面才初始化），信任根在启动时装载
+  loadTrustedWorkspaceRoots();
   await detectPortWarnings();
 
   // wss 端口（PORT+1）：与明文端口共用 express app 与 ws 处理逻辑
