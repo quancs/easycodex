@@ -1184,9 +1184,12 @@ function AppToolbar({ appState, relayOnline, connectedClients, pendingAction, ac
 function TunnelPanel({ api, appState, isBusy, runAction }) {
   const tunnel = appState?.tunnel || {};
   const [draft, setDraft] = useState(null);
+  const [dirty, setDirty] = useState(false);
   useEffect(() => {
-    // 仅在表单未被编辑过时同步服务端状态，避免打字被覆盖
-    setDraft((current) => current || {
+    // 用户没在编辑（dirty=false）时跟随服务端状态；appState 首帧为 null，
+    // 不能初始化一次就停——否则真实配置加载后表单仍停留在空值（表现为"配置丢失"）
+    if (dirty) return;
+    setDraft({
       enabled: Boolean(tunnel.enabled),
       proxyType: tunnel.proxyType || 'tcp',
       serverAddr: tunnel.serverAddr || '',
@@ -1198,12 +1201,12 @@ function TunnelPanel({ api, appState, isBusy, runAction }) {
       remotePort: tunnel.remotePort || '',
       downloadBase: tunnel.downloadBase || '',
     });
-  }, [tunnel.serverAddr, tunnel.remotePort, tunnel.enabled]);
+  }, [dirty, tunnel.enabled, tunnel.proxyType, tunnel.serverAddr, tunnel.serverPort, tunnel.remotePort, tunnel.subdomain, tunnel.proxyName]);
   if (!draft) return null;
-  const update = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  const update = (patch) => { setDirty(true); setDraft((d) => ({ ...d, ...patch })); };
   const save = (patch = {}) => {
     const next = { ...draft, ...patch, serverPort: Number(draft.serverPort) || 7000, remotePort: Number(draft.remotePort) || 0 };
-    setDraft(next);
+    setDirty(false);
     runAction('saving', () => api.saveTunnelConfig(next));
   };
   const statusText = {
