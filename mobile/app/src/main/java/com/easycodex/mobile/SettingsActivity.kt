@@ -447,6 +447,9 @@ fun SettingsApp(onClose: () -> Unit) {
             name = existing?.name?.takeIf { it.isNotBlank() } ?: relayHostNameFor(nextRelayUrl.trim()),
             relayUrl = nextRelayUrl.trim(),
             apiKey = nextApiKey.trim(),
+            // 保留扫码配对带入的 e2e/tlsfp，防止"保存设置"把指纹覆盖成空导致自签证书校验失败
+            e2eRequired = existing?.e2eRequired ?: false,
+            tlsFingerprint = existing?.tlsFingerprint.orEmpty(),
             hostname = existing?.hostname.orEmpty(),
             platform = existing?.platform.orEmpty(),
             workspaceRoot = existing?.workspaceRoot.orEmpty(),

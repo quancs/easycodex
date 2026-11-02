@@ -759,10 +759,15 @@ class EasyCodexController(private val context: android.content.Context) {
             .putString(PREF_ACTIVE_RELAY_HOST_ID, profile.id)
             .putString(PREF_RELAY_URL, profile.relayUrl)
             .putString(PREF_API_KEY, profile.apiKey)
+            .putBoolean(PREF_E2E_REQUIRED, profile.e2eRequired)
+            .putString(PREF_TLS_FINGERPRINT, profile.tlsFingerprint)
             .apply()
         activeRelayHostId = profile.id
         relayUrl = profile.relayUrl
         apiKey = profile.apiKey
+        e2eRequired = profile.e2eRequired
+        tlsFingerprint = profile.tlsFingerprint
+        TlsPinning.activeFingerprint = profile.tlsFingerprint.ifBlank { null }
         hostHealth = HostHealthState(loading = true)
         connect()
     }
@@ -2815,7 +2820,7 @@ class EasyCodexController(private val context: android.content.Context) {
     private fun updateActiveHostProfile(health: HostHealthState) {
         val activeId = activeRelayHostId.ifBlank { relayHostIdFor(relayUrl) }
         val current = relayHostProfiles.firstOrNull { it.id == activeId }
-            ?: RelayHostProfile(activeId, relayHostNameFor(relayUrl), relayUrl, apiKey)
+            ?: RelayHostProfile(activeId, relayHostNameFor(relayUrl), relayUrl, apiKey, e2eRequired, tlsFingerprint)
         val updated = current.copy(
             name = health.hostname.ifBlank { current.name },
             hostname = health.hostname,
