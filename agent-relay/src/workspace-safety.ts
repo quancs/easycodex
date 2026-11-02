@@ -51,6 +51,27 @@ export function isDisallowedWorkspaceRoot(
   return disallowed.some((root) => isWithinBase(root, resolved));
 }
 
+/**
+ * 显式信任场景的边界：只拦真正的系统边界（文件系统根、系统目录）。
+ * 家目录/Desktop/Documents/Downloads 允许被用户显式信任（trusted-roots.json）。
+ */
+export function isSystemBoundaryRoot(
+  targetPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const resolved = path.resolve(targetPath);
+  const parsed = path.parse(resolved);
+  if (normalizePathKey(resolved) === normalizePathKey(parsed.root)) return true;
+  const systemRoots = [
+    env.SystemRoot,
+    env.ProgramFiles,
+    env['ProgramFiles(x86)'],
+    env.APPDATA,
+    env.LOCALAPPDATA,
+  ].filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '');
+  return systemRoots.some((root) => isWithinBase(root, resolved));
+}
+
 export function assertWorkspaceRootAllowed(targetPath: string): void {
   const resolved = path.resolve(targetPath);
   const realResolved = fs.realpathSync(resolved);

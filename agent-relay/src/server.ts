@@ -58,6 +58,7 @@ import { mobileGitStatusPayload, normalizeGitCommitFiles, normalizeGitRestoreFil
 import {
   assertWorkspaceRootAllowed,
   isDisallowedWorkspaceRoot,
+  isSystemBoundaryRoot,
   isWithinBase,
   isWorkspaceRootAllowed,
   normalizePathKey,
@@ -67,6 +68,7 @@ import {
 const PORT = Number(process.env.PORT || 3001);
 const CONFIG_DIR = path.join(os.homedir(), '.easycodex');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+const TRUSTED_ROOTS_PATH = path.join(CONFIG_DIR, 'trusted-roots.json');
 
 interface RelayConfig {
   apiKey: string;
@@ -483,14 +485,20 @@ function getAllowedWorkspaceRoots(): string[] {
 
 function trustCustomWorkspaceRoot(targetPath: string): string {
   const resolved = resolveExistingDirectory(targetPath);
-  assertWorkspaceRootAllowed(resolved);
+  // 显式信任：只拦系统边界，家目录等允许（用户明确要求）
+  if (isSystemBoundaryRoot(resolved)) {
+    throw new Error('Refusing to trust a filesystem or system root directory.');
+  }
   customWorkspaceRoots.add(resolved);
+  persistTrustedWorkspaceRoots();
   return resolved;
 }
 
 function resolveWorkspaceCwd(cwd?: string): string {
   const requested = resolveSafePath(cwd || getPrimaryWorkspaceRoot());
-  if (isDisallowedWorkspaceRoot(requested)) {
+  // 显式信任（trusted-roots.json / trust_workspace_root）的根优先于系统边界检查
+  const explicitlyTrusted = Array.from(customWorkspaceRoots).some((root) => isWithinBase(root, requested));
+  if (!explicitlyTrusted && isDisallowedWorkspaceRoot(requested)) {
     throw new Error('Refusing to use a system, profile, or application data directory as a project workspace. Choose a specific project folder.');
   }
   const allowedRoots = getAllowedWorkspaceRoots();
@@ -852,6 +860,7 @@ function stopCliRun(windowId?: string): boolean {
 }
 
 const config = loadOrCreateConfig();
+loadTrustedWorkspaceRoots();
 const relaySessionId = crypto.randomUUID();
 
 const app = express();
@@ -904,6 +913,38 @@ const codexWatchers: fs.FSWatcher[] = [];
 let lastUpdateCheck: UpdateInfo | null = null;
 const activeCliRuns = new Map<string, CliRun>();
 const customWorkspaceRoots = new Set<string>();
+
+/** 加载持久化的信任工作区（跳过已不存在/不允许的目录） */
+function loadTrustedWorkspaceRoots() {
+  try {
+    if (!fs.existsSync(TRUSTED_ROOTS_PATH)) return;
+    const raw = JSON.parse(fs.readFileSync(TRUSTED_ROOTS_PATH, 'utf8'));
+    if (!Array.isArray(raw)) return;
+    for (const item of raw) {
+      if (typeof item !== 'string' || !item.trim()) continue;
+      try {
+        const resolved = path.resolve(item.trim());
+        if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) continue;
+        if (isSystemBoundaryRoot(resolved)) continue;
+        customWorkspaceRoots.add(resolved);
+      } catch { /* 单个目录失败不影响其他 */ }
+    }
+    if (customWorkspaceRoots.size > 0) {
+      console.log(`[workspace] Loaded ${customWorkspaceRoots.size} trusted root(s) from ${TRUSTED_ROOTS_PATH}`);
+    }
+  } catch (err) {
+    console.warn('[workspace] Failed to load trusted roots:', err instanceof Error ? err.message : err);
+  }
+}
+
+function persistTrustedWorkspaceRoots() {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(TRUSTED_ROOTS_PATH, JSON.stringify(Array.from(customWorkspaceRoots), null, 2), { encoding: 'utf8', mode: 0o600 });
+  } catch (err) {
+    console.warn('[workspace] Failed to persist trusted roots:', err instanceof Error ? err.message : err);
+  }
+}
 const relayWarnings: RelayWarning[] = [];
 const pendingStreamBatches = new Map<string, PendingStreamBatch>();
 
