@@ -1896,7 +1896,8 @@ ipcMain.handle('save-config', async (_event, input) => {
 ipcMain.handle('preview-port', async (_event, input) => {
   const port = validatePort(input?.port);
   const apiKey = loadApiKey();
-  const details = connectionDetails(port, apiKey);
+  // 与 appState 一致：隧道启用时预览也用公网地址，避免覆盖成局域网地址
+  const details = connectionDetails(port, apiKey, tunnelManager.publicRelayUrl() || undefined);
   const portStatus = await checkPortStatus(port);
   return {
     port,
