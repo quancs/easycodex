@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Base64
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -883,8 +884,10 @@ class EasyCodexController(private val context: android.content.Context) {
                         )
                         if (session != null) {
                             e2eSession = session
+                            Log.i("EasyCodex", "E2E handshake OK (encrypted session established)")
                             onAuthenticated(generation)
                         } else {
+                            Log.e("EasyCodex", "E2E proof mismatch (server hmac verification failed)")
                             connectionStatus = "disconnected"
                             statusText = localizedConnectionError("E2E proof mismatch")
                         }
@@ -911,11 +914,13 @@ class EasyCodexController(private val context: android.content.Context) {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // 完整堆栈进 logcat（tag=EasyCodex），便于 adb 诊断
+                Log.e("EasyCodex", "WebSocket failure (http=${response?.code}): ${t.javaClass.name}: ${t.message}", t)
                 main.post {
                     if (generation != connectionGeneration) return@post
                     val notifyDisconnected = connectionStatus == "connected"
                     this@EasyCodexController.webSocket = null
-                    val error = localizedConnectionError(t.message)
+                    val error = localizedConnectionError(t.message ?: t.javaClass.simpleName)
                     failPending(error)
                     scheduleReconnect(error, notifyDisconnected)
                 }
